@@ -1,106 +1,111 @@
-import streamlit as st
-import pandas as pd
-import requests
-from bs4 import BeautifulSoup
+import re
 from datetime import date, datetime
 from io import StringIO
 
-st.set_page_config(page_title="競輪スクリーナー", page_icon="🚴", layout="wide")
+import pandas as pd
+import requests
+import streamlit as st
+from bs4 import BeautifulSoup
 
+st.set_page_config(page_title="競輪スクリーナー", page_icon="🚴", layout="wide")
 st.title("🚴 競輪スクリーナー")
-st.caption("個人利用向け試作版 — まず公式開催日程の取得を試し、取得できない情報は推測しません。")
+st.caption("個人利用向け試作版。取得できた情報だけを表示し、取れない情報は推測しません。")
 
 TODAY = date.today()
-SCHEDULE_URL = "https://www.keirin.jp/pc/raceschedule"
-SP_SCHEDULE_URL = "https://www.keirin.jp/sp/raceschedule"
+SCHEDULE_URL = "https://www.keirin.jp/sp/raceschedule"
+PC_URL = "https://www.keirin.jp/pc/raceschedule"
 
 st.info(
-    "この版では、KEIRIN.JPの公開開催日程ページへの接続を試します。"
-    "出走表・ライン・オッズ・当日の風をすべて自動取得する機能は、まだ完成していません。"
-    "取得できた情報と、未取得の情報を分けて表示します。"
+    "この版はKEIRIN.JPの開催日程ページから、開催場名や開催期間らしき文字列を抽出できるか試します。"
+    "出走表・ライン・オッズ・風向風速の全自動取得は、まだ実装されていません。"
 )
 
-st.subheader("1. 今日の開催日程を取得")
-st.write(f"対象日：**{TODAY.strftime('%Y年%m月%d日')}**")
+st.subheader("1. 今日の開催日程を確認")
+st.write(f"対象日：**{TODAY:%Y年%m月%d日}**")
+a, b = st.columns(2)
+with a:
+    run = st.button("公式ページから開催情報を取得", type="primary", use_container_width=True)
+with b:
+    st.link_button("KEIRIN.JP公式日程を開く", PC_URL, use_container_width=True)
 
-col1, col2 = st.columns(2)
-with col1:
-    fetch_button = st.button("公式開催日程への接続を試す", type="primary", use_container_width=True)
-with col2:
-    st.link_button("KEIRIN.JPの開催日程を開く", SCHEDULE_URL, use_container_width=True)
+if run:
+    headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1"}
+    try:
+        with st.spinner("公式ページに接続中…"):
+            r = requests.get(SCHEDULE_URL, headers=headers, timeout=20)
+            r.raise_for_status()
+            r.encoding = r.apparent_encoding or "utf-8"
+            soup = BeautifulSoup(r.text, "html.parser")
+        st.success(f"ページ取得成功（HTTP {r.status_code}、約{len(r.text):,}文字）")
 
-if fetch_button:
-    with st.spinner("KEIRIN.JPに接続しています…"):
-        try:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (compatible; personal-keirin-screener/0.3)"
-            }
-            response = requests.get(SP_SCHEDULE_URL, headers=headers, timeout=15)
-            response.raise_for_status()
-            response.encoding = response.apparent_encoding or "utf-8"
-            soup = BeautifulSoup(response.text, "html.parser")
-            page_text = " ".join(soup.stripped_strings)
+        # Remove script/style contents; extract visible text without assuming HTML tables exist.
+        for tag in soup(["script", "style", "noscript"]):
+            tag.decompose()
+        lines = [re.sub(r"\s+", " ", x).strip() for x in soup.stripped_strings]
+        lines = [x for x in lines if x]
 
-            st.success(f"公式ページへの接続に成功しました（HTTP {response.status_code}）。")
-            st.caption("これはページに接続できたことを示すもので、今日の全開催を正しく抽出できた保証ではありません。")
+        # Detect schedule entries in the mobile schedule's visible text.
+        date_pat = re.compile(r"(?P<start>\d{1,2}/\d{1,2})\s*[（(]?[月火水木金土日][）)]?\s*[～〜\-]\s*(?P<end>\d{1,2}/\d{1,2})")
+        venue_names = [
+            "函館","青森","いわき平","弥彦","前橋","取手","宇都宮","大宮","西武園","京王閣","立川",
+            "松戸","川崎","平塚","小田原","伊東","静岡","名古屋","岐阜","大垣","豊橋","富山","松阪",
+            "四日市","福井","奈良","向日町","和歌山","岸和田","玉野","広島","防府","高松","小松島",
+            "高知","松山","小倉","久留米","武雄","佐世保","別府","熊本"
+        ]
+        rows = []
+        current_venue = None
+        for i, line in enumerate(lines):
+            cleaned = line.replace("競輪場", "").strip()
+            if cleaned in venue_names:
+                current_venue = cleaned
+            match = date_pat.search(line)
+            if match and current_venue:
+                title = ""
+                # The event title is often in a nearby line; keep it only as source text, not a prediction.
+                for candidate in lines[i+1:i+4]:
+                    if candidate and not date_pat.search(candidate) and candidate not in venue_names and len(candidate) <= 80:
+                        title = candidate
+                        break
+                rows.append({
+                    "競輪場": current_venue,
+                    "開催期間（ページ記載）": match.group(0),
+                    "開催名（ページ記載・参考）": title
+                })
 
-            # Display a small excerpt for diagnostics rather than pretending to have parsed all races.
-            keywords = ["開催日程", "開催がありません", "北日本", "関東", "南関東"]
-            found = [word for word in keywords if word in page_text]
-            if found:
-                st.write("ページ内で確認できた見出し・語句：", "、".join(found))
+        if rows:
+            df = pd.DataFrame(rows).drop_duplicates()
+            st.subheader("ページから抽出した開催情報（参考）")
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.warning("抽出結果は自動判定の試験用です。今日開催中かどうかは日付・ページ表示を公式リンクで照合してください。")
+        else:
+            st.warning("ページの取得には成功しましたが、開催情報を自動抽出できませんでした。サイトのHTML構造が想定と異なる可能性があります。")
+            st.write("ページ本文の先頭部分（診断用）")
+            st.code("\n".join(lines[:100])[:9000])
 
-            # Try to extract tables, but clearly label the result as raw source tables.
-            try:
-                tables = pd.read_html(StringIO(response.text))
-                if tables:
-                    st.write(f"ページ内の表を {len(tables)} 個検出しました。内容は公式ページの表をそのまま表示したものです。")
-                    for i, table in enumerate(tables[:8], start=1):
-                        with st.expander(f"取得した表 {i}", expanded=(i == 1)):
-                            st.dataframe(table, use_container_width=True, hide_index=True)
-                else:
-                    st.warning("ページ内の表を自動抽出できませんでした。上の公式リンクから開催日程を確認してください。")
-            except Exception:
-                st.warning("ページのHTMLから表を自動抽出できませんでした。上の公式リンクから開催日程を確認してください。")
-
-            st.markdown(f"[公式開催日程を別画面で確認する]({SCHEDULE_URL})")
-        except Exception as exc:
-            st.error("KEIRIN.JPへの自動接続に失敗しました。サイト側の仕様・接続制限・一時的な通信障害などが考えられます。")
-            st.caption(f"診断情報：{type(exc).__name__}: {exc}")
-            st.link_button("公式開催日程を開く", SCHEDULE_URL)
-            st.write("自動取得に失敗したため、開催情報を推測して表示することはしません。")
+        with st.expander("診断情報（取得ページ本文の先頭）"):
+            st.code("\n".join(lines[:100])[:9000])
+    except Exception as e:
+        st.error("公式ページを取得できませんでした。接続制限、一時的な通信障害、サイト側の変更などが考えられます。")
+        st.caption(f"診断情報：{type(e).__name__}: {e}")
+        st.link_button("KEIRIN.JP公式日程を開く", PC_URL)
 
 st.divider()
-st.subheader("2. 次の開発段階")
-st.markdown(
-    """
-    - **この版で試すこと：** 公式開催日程ページへの接続と、ページ内の表を抽出できるかの確認
-    - **まだ未実装：** 当日の全開催・全レースの正確な抽出、出走表、ライン、全券種オッズ、風向・風速の自動取得
-    - **まだ未実装：** 校正済みの勝率・期待値モデル、バックテスト、結果の自動照合
-    - **自動投票：** 行いません
-    """
-)
+st.subheader("2. 開発状況")
+st.markdown("""
+- **今回の確認対象：** 公式開催日程ページの取得と、HTMLの表以外も含めた文字抽出
+- **未実装：** 当日の全開催・全レースの完全な抽出、出走表、ライン、全券種オッズ、当日の風向・風速の自動取得
+- **未実装：** 校正済み確率、期待値モデル、過去データでの検証
+- **自動投票：** 行いません
+""")
 
-st.subheader("3. CSVを使った旧方式（予備）")
-st.caption("自動取得の検証中に、必要な場合だけ使う予備機能です。CSVを手作業で用意することを前提にしたくないため、ここは折りたたんであります。")
-
-with st.expander("CSVを読み込む（必要な場合のみ）"):
-    uploaded = st.file_uploader(
-        "確認用CSVを選択（races / entrants / odds / results）",
-        type=["csv"],
-        accept_multiple_files=True
-    )
-    if uploaded:
-        for file in uploaded:
+with st.expander("旧方式のCSV読み込み（予備・必要な場合のみ）"):
+    files = st.file_uploader("確認用CSVを選択", type=["csv"], accept_multiple_files=True)
+    if files:
+        for file in files:
             st.markdown(f"**{file.name}**")
             try:
-                df = pd.read_csv(file)
-                st.dataframe(df.head(20), use_container_width=True, hide_index=True)
-            except Exception as exc:
-                st.error(f"読み込みに失敗しました: {exc}")
+                st.dataframe(pd.read_csv(file).head(20), use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.error(f"読み込みに失敗しました: {e}")
 
-st.divider()
-st.caption(
-    "注意：取得元サイトの利用条件に従ってください。表示されたデータだけで購入判断をせず、"
-    "オッズ・出走表・ライン・バンク特性・当日の風を確認してください。予測や利益を保証するものではありません。"
-)
+st.caption("予想や利益を保証するものではありません。取得元サイトの利用条件に従い、出走表・ライン・オッズ・バンク特性・当日の風を確認して判断してください。")
