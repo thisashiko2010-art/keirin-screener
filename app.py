@@ -6,9 +6,9 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="競輪スクリーナー v11", page_icon="🚴", layout="wide")
+st.set_page_config(page_title="競輪スクリーナー v12", page_icon="🚴", layout="wide")
 st.title("🚴 競輪スクリーナー")
-st.caption("v11：選手表の見出しによる途中切れを避ける修正版。自動投票は行いません。")
+st.caption("v12：選手表の見出しによる途中切れを避ける修正版。自動投票は行いません。")
 BASE_URL = "https://www.winticket.jp/keirin/racecard"
 HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","Accept-Language":"ja,en-US;q=0.9,en;q=0.8"}
 VENUES = {"hakodate":"函館","aomori":"青森","yahiko":"弥彦","maebashi":"前橋","toride":"取手","utsunomiya":"宇都宮","omiya":"大宮","seibuen":"西武園","keiokaku":"京王閣","tachikawa":"立川","matsudo":"松戸","chiba":"千葉","kawasaki":"川崎","hiratsuka":"平塚","odawara":"小田原","ito":"伊東","shizuoka":"静岡","nagoya":"名古屋","gifu":"岐阜","ogaki":"大垣","toyohashi":"豊橋","toyama":"富山","matsusaka":"松阪","yokkaichi":"四日市","fukui":"福井","nara":"奈良","mukomachi":"向日町","wakayama":"和歌山","kishiwada":"岸和田","tamano":"玉野","hiroshima":"広島","hofu":"防府","takamatsu":"高松","komatsushima":"小松島","kochi":"高知","matsuyama":"松山","kokura":"小倉","kurume":"久留米","takeo":"武雄","sasebo":"佐世保","beppu":"別府","kumamoto":"熊本"}
@@ -32,7 +32,7 @@ def extract_riders(page_text):
     # 車番は「枠番 車番」の2数字とは限らないため、まず2数字の並びを許容。
     # 名前の後ろは都道府県の固定リストで境界を確定する。
     pat = re.compile(
-        rf"(?P<w>[1-6])\s+(?P<c>[1-9])\s+"
+        rf"(?P<w>[1-9])\s+(?P<c>[1-9])\s+"
         rf"(?P<n>[一-龥々〆ヵヶぁ-ゖァ-ヺー・]{{2,12}}?)\s+"
         rf"(?P<p>{pref_pattern})\s+(?P<cl>[ASL]\d)\s+"
         rf"(?P<age>\d{{2}})歳\s+(?P<reg>\d{{2,3}})期"
@@ -57,7 +57,7 @@ def extract_riders(page_text):
     diagnostic += "\n".join(snippets)
     return rows, diagnostic
 
-st.info("v11：本文全体を解析し、選手名と都道府県の境界を固定リストで判定します。抽出できない場合は診断情報を表示します。")
+st.info("v12：本文全体を解析し、選手名と都道府県の境界を固定リストで判定します。抽出できない場合は診断情報を表示します。")
 c1,c2=st.columns(2)
 with c1: load=st.button("出走表URL一覧を取得",type="primary",use_container_width=True)
 with c2: st.link_button("WINTICKET出走表一覧を開く",BASE_URL,use_container_width=True)
