@@ -6,9 +6,9 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="競輪スクリーナー v10", page_icon="🚴", layout="wide")
+st.set_page_config(page_title="競輪スクリーナー v11", page_icon="🚴", layout="wide")
 st.title("🚴 競輪スクリーナー")
-st.caption("v10：選手表の見出しによる途中切れを避ける修正版。自動投票は行いません。")
+st.caption("v11：選手表の見出しによる途中切れを避ける修正版。自動投票は行いません。")
 BASE_URL = "https://www.winticket.jp/keirin/racecard"
 HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","Accept-Language":"ja,en-US;q=0.9,en;q=0.8"}
 VENUES = {"hakodate":"函館","aomori":"青森","yahiko":"弥彦","maebashi":"前橋","toride":"取手","utsunomiya":"宇都宮","omiya":"大宮","seibuen":"西武園","keiokaku":"京王閣","tachikawa":"立川","matsudo":"松戸","chiba":"千葉","kawasaki":"川崎","hiratsuka":"平塚","odawara":"小田原","ito":"伊東","shizuoka":"静岡","nagoya":"名古屋","gifu":"岐阜","ogaki":"大垣","toyohashi":"豊橋","toyama":"富山","matsusaka":"松阪","yokkaichi":"四日市","fukui":"福井","nara":"奈良","mukomachi":"向日町","wakayama":"和歌山","kishiwada":"岸和田","tamano":"玉野","hiroshima":"広島","hofu":"防府","takamatsu":"高松","komatsushima":"小松島","kochi":"高知","matsuyama":"松山","kokura":"小倉","kurume":"久留米","takeo":"武雄","sasebo":"佐世保","beppu":"別府","kumamoto":"熊本"}
@@ -25,36 +25,39 @@ def extract_races(html):
         rows.append({"競輪場":VENUES.get(slug,slug),"開催ID":event,"開催日番号":int(day),"レース":f"{int(race)}R","URL":href})
     return pd.DataFrame(rows,columns=["競輪場","開催ID","開催日番号","レース","URL"]).drop_duplicates("URL").reset_index(drop=True)
 def extract_riders(page_text):
-    text=norm(page_text)
-    pos=text.find("枠 車 選手名 AI 競走得点")
-    if pos<0: pos=text.find("枠 車 選手名")
-    if pos<0: return [], text[:3000]
-    # ページによっては「並び予想」などの見出しが選手表の途中に現れるため、
-    # 以前のように見出しで切り詰めない。選手表の開始位置以降を解析し、
-    # 車番ごとに最初に見つかった候補だけを採用する。
-    tail=text[pos:]
-    # 都道府県名を固定候補にして、選手名と府県名の境界を曖昧にしない
+    text = norm(page_text)
+    # 見出しの表記ゆれに依存せず、ページ本文全体から「車番→選手名→府県→級班→年齢→期別→得点」を探す。
     prefectures = ["北海道","青森","岩手","宮城","秋田","山形","福島","茨城","栃木","群馬","埼玉","千葉","東京","神奈川","新潟","富山","石川","福井","山梨","長野","岐阜","静岡","愛知","三重","滋賀","京都","大阪","兵庫","奈良","和歌山","鳥取","島根","岡山","広島","山口","徳島","香川","愛媛","高知","福岡","佐賀","長崎","熊本","大分","宮崎","鹿児島","沖縄"]
     pref_pattern = "|".join(sorted(prefectures, key=len, reverse=True))
+    # 車番は「枠番 車番」の2数字とは限らないため、まず2数字の並びを許容。
+    # 名前の後ろは都道府県の固定リストで境界を確定する。
     pat = re.compile(
-        rf"(?P<w>[1-9])\s+(?P<c>[1-9])\s+"
+        rf"(?P<w>[1-6])\s+(?P<c>[1-9])\s+"
         rf"(?P<n>[一-龥々〆ヵヶぁ-ゖァ-ヺー・]{{2,12}}?)\s+"
         rf"(?P<p>{pref_pattern})\s+(?P<cl>[ASL]\d)\s+"
-        rf"(?P<age>\d{{2}})歳\s+(?P<reg>\d{{2,3}})期\s+"
-        rf"(?:(?:本命|対抗|単穴|連下)\s+)?(?P<score>\d{{2,3}}\.\d{{2}})"
+        rf"(?P<age>\d{{2}})歳\s+(?P<reg>\d{{2,3}})期"
+        rf"(?:\s+(?:本命|対抗|単穴|連下))?\s+(?P<score>\d{{2,3}}\.\d{{2}})"
     )
-    rows=[]; seen=set()
-    for m in pat.finditer(tail):
+    rows=[]; seen=set(); matches=[]
+    for m in pat.finditer(text):
         d=m.groupdict(); car=int(d["c"])
+        matches.append({"車番":car,"選手名候補":d["n"],"府県候補":d["p"],"一致文字列":m.group(0)})
         if car in seen: continue
         seen.add(car)
         rows.append({"枠番":int(d["w"]),"車番":car,"選手名":d["n"],"府県":d["p"],"級班":d["cl"],"年齢":int(d["age"]),"期別":int(d["reg"]),"競走得点":float(d["score"])})
-        # 通常の競輪は最大9車。1～9番車が揃ったら後続セクションを読まない。
-        if seen == set(range(1, 10)):
-            break
-    return sorted(rows,key=lambda x:x["車番"]),tail[:4500]
+    # 詳細表の並びで車番が1〜9に連番でなくても、車番をキーに重複排除する。
+    rows=sorted(rows,key=lambda x:x["車番"])
+    # 診断抜粋：選手名が見つからないときに本文内の該当行を確認できるようにする。
+    diagnostic = "抽出候補一覧:\n" + "\n".join(f"車番{m['車番']}: {m['選手名候補']} / {m['府県候補']} — {m['一致文字列']}" for m in matches)
+    diagnostic += "\n\n本文中の『越智』『愛媛』付近:\n"
+    snippets=[]
+    for keyword in ("越智", "愛媛", "83.25"):
+        i=text.find(keyword)
+        snippets.append(f"{keyword}: " + (text[max(0,i-100):i+180] if i>=0 else "見つからず"))
+    diagnostic += "\n".join(snippets)
+    return rows, diagnostic
 
-st.info("前版で7番車が抜けたため、選手表の後ろを見出しで切る処理を外しました。車番ごとに最初の候補を採用します。")
+st.info("v11：本文全体を解析し、選手名と都道府県の境界を固定リストで判定します。抽出できない場合は診断情報を表示します。")
 c1,c2=st.columns(2)
 with c1: load=st.button("出走表URL一覧を取得",type="primary",use_container_width=True)
 with c2: st.link_button("WINTICKET出走表一覧を開く",BASE_URL,use_container_width=True)
@@ -76,6 +79,7 @@ if isinstance(races,pd.DataFrame) and not races.empty:
             with st.spinner("レース本文を解析中…"):
                 html,status=get_html(url); soup=BeautifulSoup(html,"html.parser"); text=soup.get_text(" ",strip=True); rows,excerpt=extract_riders(text)
             st.write(f"レースページ HTTP {status} ／ HTML {len(html):,}文字")
+            st.write(f"抽出人数：{len(rows)}人（出走表の実人数との照合は必要です）")
             if rows:
                 car_numbers = [r["車番"] for r in rows]
                 missing = sorted(set(range(1, max(car_numbers, default=0) + 1)) - set(car_numbers))
