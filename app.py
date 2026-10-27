@@ -25,15 +25,24 @@ def extract_races(html):
         rows.append({"競輪場":VENUES.get(slug,slug),"開催ID":event,"開催日番号":int(day),"レース":f"{int(race)}R","URL":href})
     return pd.DataFrame(rows,columns=["競輪場","開催ID","開催日番号","レース","URL"]).drop_duplicates("URL").reset_index(drop=True)
 def extract_riders(page_text):
-    text=norm(page_text); pos=text.find("枠 車 選手名 AI 競走得点")
+    text=norm(page_text)
+    pos=text.find("枠 車 選手名 AI 競走得点")
     if pos<0: pos=text.find("枠 車 選手名")
     if pos<0: return [], text[:3000]
     tail=text[pos:]
-    for stop in ("並び予想","結果 勝ち上がり条件","勝ち上がり条件"):
+    for stop in ("並び予想", "結果 勝ち上がり条件", "勝ち上がり条件"):
         i=tail.find(stop)
         if i>=0: tail=tail[:i]; break
-    # Parse common row layout visible in page text: lane, car, name, prefecture, class, age, registration, score.
-    pat=re.compile(r"(?P<w>[1-9])\s+(?P<c>[1-9])\s+(?P<n>[一-龥々〆ヵヶぁ-ゖァ-ヺー・]{2,12})\s+(?P<p>[一-龥々ぁ-ゖァ-ヺー]{1,6})\s+(?P<cl>[ASL]\d)\s+(?P<age>\d{2})歳\s+(?P<reg>\d{2,3})期.*?(?P<score>\d{2,3}\.\d{2})")
+    # 都道府県名を固定候補にして、選手名と府県名の境界を曖昧にしない
+    prefectures = ["北海道","青森","岩手","宮城","秋田","山形","福島","茨城","栃木","群馬","埼玉","千葉","東京","神奈川","新潟","富山","石川","福井","山梨","長野","岐阜","静岡","愛知","三重","滋賀","京都","大阪","兵庫","奈良","和歌山","鳥取","島根","岡山","広島","山口","徳島","香川","愛媛","高知","福岡","佐賀","長崎","熊本","大分","宮崎","鹿児島","沖縄"]
+    pref_pattern = "|".join(sorted(prefectures, key=len, reverse=True))
+    pat = re.compile(
+        rf"(?P<w>[1-9])\s+(?P<c>[1-9])\s+"
+        rf"(?P<n>[一-龥々〆ヵヶぁ-ゖァ-ヺー・]{{2,12}}?)\s+"
+        rf"(?P<p>{pref_pattern})\s+(?P<cl>[ASL]\d)\s+"
+        rf"(?P<age>\d{{2}})歳\s+(?P<reg>\d{{2,3}})期\s+"
+        rf"(?:(?:本命|対抗|単穴|連下)\s+)?(?P<score>\d{{2,3}}\.\d{{2}})"
+    )
     rows=[]; seen=set()
     for m in pat.finditer(tail):
         d=m.groupdict(); car=int(d["c"])
@@ -41,6 +50,7 @@ def extract_riders(page_text):
         seen.add(car)
         rows.append({"枠番":int(d["w"]),"車番":car,"選手名":d["n"],"府県":d["p"],"級班":d["cl"],"年齢":int(d["age"]),"期別":int(d["reg"]),"競走得点":float(d["score"])})
     return sorted(rows,key=lambda x:x["車番"]),tail[:4500]
+
 st.info("前回の本文には選手表が実際に含まれていました。今回はJSONを探さず、本文中の「枠・車・選手名・競走得点」から選手行を読み取ります。")
 c1,c2=st.columns(2)
 with c1: load=st.button("出走表URL一覧を取得",type="primary",use_container_width=True)
@@ -64,7 +74,12 @@ if isinstance(races,pd.DataFrame) and not races.empty:
                 html,status=get_html(url); soup=BeautifulSoup(html,"html.parser"); text=soup.get_text(" ",strip=True); rows,excerpt=extract_riders(text)
             st.write(f"レースページ HTTP {status} ／ HTML {len(html):,}文字")
             if rows:
-                st.success(f"{len(rows)}人分の選手データ候補を抽出しました。")
+                car_numbers = [r["車番"] for r in rows]
+                missing = sorted(set(range(1, max(car_numbers, default=0) + 1)) - set(car_numbers))
+                if missing:
+                    st.warning(f"車番 {missing} の取得漏れがあります。予想に使う前に出走表と照合してください。")
+                else:
+                    st.success(f"{len(rows)}人分の選手データ候補を抽出しました。車番の連番を確認しました。")
                 df=pd.DataFrame(rows); st.dataframe(df,use_container_width=True,hide_index=True)
                 st.download_button("選手データをCSV保存",df.to_csv(index=False).encode("utf-8-sig"),f"keirin_riders_{date.today():%Y%m%d}.csv","text/csv",use_container_width=True)
             else: st.warning("本文は取得できましたが、選手行の形式が想定と一致しませんでした。下の抜粋を使って形式を合わせます。")
