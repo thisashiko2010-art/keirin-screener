@@ -6,9 +6,9 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="競輪スクリーナー v12", page_icon="🚴", layout="wide")
+st.set_page_config(page_title="競輪スクリーナー v13", page_icon="🚴", layout="wide")
 st.title("🚴 競輪スクリーナー")
-st.caption("v12：選手表の見出しによる途中切れを避ける修正版。自動投票は行いません。")
+st.caption("v13：最終車番の枠番省略形式にも対応。自動投票は行いません。")
 BASE_URL = "https://www.winticket.jp/keirin/racecard"
 HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","Accept-Language":"ja,en-US;q=0.9,en;q=0.8"}
 VENUES = {"hakodate":"函館","aomori":"青森","yahiko":"弥彦","maebashi":"前橋","toride":"取手","utsunomiya":"宇都宮","omiya":"大宮","seibuen":"西武園","keiokaku":"京王閣","tachikawa":"立川","matsudo":"松戸","chiba":"千葉","kawasaki":"川崎","hiratsuka":"平塚","odawara":"小田原","ito":"伊東","shizuoka":"静岡","nagoya":"名古屋","gifu":"岐阜","ogaki":"大垣","toyohashi":"豊橋","toyama":"富山","matsusaka":"松阪","yokkaichi":"四日市","fukui":"福井","nara":"奈良","mukomachi":"向日町","wakayama":"和歌山","kishiwada":"岸和田","tamano":"玉野","hiroshima":"広島","hofu":"防府","takamatsu":"高松","komatsushima":"小松島","kochi":"高知","matsuyama":"松山","kokura":"小倉","kurume":"久留米","takeo":"武雄","sasebo":"佐世保","beppu":"別府","kumamoto":"熊本"}
@@ -29,19 +29,26 @@ def extract_riders(page_text):
     # 見出しの表記ゆれに依存せず、ページ本文全体から「車番→選手名→府県→級班→年齢→期別→得点」を探す。
     prefectures = ["北海道","青森","岩手","宮城","秋田","山形","福島","茨城","栃木","群馬","埼玉","千葉","東京","神奈川","新潟","富山","石川","福井","山梨","長野","岐阜","静岡","愛知","三重","滋賀","京都","大阪","兵庫","奈良","和歌山","鳥取","島根","岡山","広島","山口","徳島","香川","愛媛","高知","福岡","佐賀","長崎","熊本","大分","宮崎","鹿児島","沖縄"]
     pref_pattern = "|".join(sorted(prefectures, key=len, reverse=True))
-    # 車番は「枠番 車番」の2数字とは限らないため、まず2数字の並びを許容。
-    # 名前の後ろは都道府県の固定リストで境界を確定する。
-    pat = re.compile(
-        rf"(?P<w>[1-9])\s+(?P<c>[1-9])\s+"
-        rf"(?P<n>[一-龥々〆ヵヶぁ-ゖァ-ヺー・]{{2,12}}?)\s+"
-        rf"(?P<p>{pref_pattern})\s+(?P<cl>[ASL]\d)\s+"
-        rf"(?P<age>\d{{2}})歳\s+(?P<reg>\d{{2,3}})期"
-        rf"(?:\s+(?:本命|対抗|単穴|連下))?\s+(?P<score>\d{{2,3}}\.\d{{2}})"
-    )
+    # 通常行は「枠番 車番 選手名…」。ただし7番車は「7 越智展孝…」と
+    # 1数字だけで始まる表示の場合があるため、2数字形式と1数字形式を別々に検索。
+    name_chars = r"[一-龥々〆ヵヶぁ-ゖァ-ヺー・]"
+    common_tail = rf"(?P<n>{name_chars}{{2,12}}?)\s+(?P<p>{pref_pattern})\s+(?P<cl>[ASL]\d)\s+(?P<age>\d{{2}})歳\s+(?P<reg>\d{{2,3}})期(?:\s+(?:本命|対抗|単穴|連下))?\s+(?P<score>\d{{2,3}}\.\d{{2}})"
+    patterns = [
+        re.compile(rf"(?P<w>[1-6])\s+(?P<c>[1-6])\s+" + common_tail),
+        re.compile(rf"(?P<w>[7-9])\s+(?P<c>[7-9])\s+" + common_tail),
+        re.compile(rf"(?P<w>[7-9])\s+" + common_tail),
+    ]
+    found=[]
+    for pat in patterns:
+        for m in pat.finditer(text):
+            d=m.groupdict()
+            if d.get("c") is None: d["c"] = d["w"]
+            found.append((m.start(), d, m.group(0)))
+    found.sort(key=lambda x: x[0])
     rows=[]; seen=set(); matches=[]
-    for m in pat.finditer(text):
-        d=m.groupdict(); car=int(d["c"])
-        matches.append({"車番":car,"選手名候補":d["n"],"府県候補":d["p"],"一致文字列":m.group(0)})
+    for _, d, matched_text in found:
+        car=int(d["c"])
+        matches.append({"車番":car,"選手名候補":d["n"],"府県候補":d["p"],"一致文字列":matched_text})
         if car in seen: continue
         seen.add(car)
         rows.append({"枠番":int(d["w"]),"車番":car,"選手名":d["n"],"府県":d["p"],"級班":d["cl"],"年齢":int(d["age"]),"期別":int(d["reg"]),"競走得点":float(d["score"])})
@@ -57,7 +64,7 @@ def extract_riders(page_text):
     diagnostic += "\n".join(snippets)
     return rows, diagnostic
 
-st.info("v12：本文全体を解析し、選手名と都道府県の境界を固定リストで判定します。抽出できない場合は診断情報を表示します。")
+st.info("v13：本文全体を解析し、最終車番が「7 越智展孝…」のように1数字で始まる形式にも対応します。抽出できない場合は診断情報を表示します。")
 c1,c2=st.columns(2)
 with c1: load=st.button("出走表URL一覧を取得",type="primary",use_container_width=True)
 with c2: st.link_button("WINTICKET出走表一覧を開く",BASE_URL,use_container_width=True)
