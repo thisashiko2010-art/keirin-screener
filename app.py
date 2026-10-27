@@ -6,9 +6,9 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="競輪スクリーナー", page_icon="🚴", layout="wide")
+st.set_page_config(page_title="競輪スクリーナー v10", page_icon="🚴", layout="wide")
 st.title("🚴 競輪スクリーナー")
-st.caption("WINTICKETの本文テキストから出走表を抽出する検証版。自動投票は行いません。")
+st.caption("v10：選手表の見出しによる途中切れを避ける修正版。自動投票は行いません。")
 BASE_URL = "https://www.winticket.jp/keirin/racecard"
 HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","Accept-Language":"ja,en-US;q=0.9,en;q=0.8"}
 VENUES = {"hakodate":"函館","aomori":"青森","yahiko":"弥彦","maebashi":"前橋","toride":"取手","utsunomiya":"宇都宮","omiya":"大宮","seibuen":"西武園","keiokaku":"京王閣","tachikawa":"立川","matsudo":"松戸","chiba":"千葉","kawasaki":"川崎","hiratsuka":"平塚","odawara":"小田原","ito":"伊東","shizuoka":"静岡","nagoya":"名古屋","gifu":"岐阜","ogaki":"大垣","toyohashi":"豊橋","toyama":"富山","matsusaka":"松阪","yokkaichi":"四日市","fukui":"福井","nara":"奈良","mukomachi":"向日町","wakayama":"和歌山","kishiwada":"岸和田","tamano":"玉野","hiroshima":"広島","hofu":"防府","takamatsu":"高松","komatsushima":"小松島","kochi":"高知","matsuyama":"松山","kokura":"小倉","kurume":"久留米","takeo":"武雄","sasebo":"佐世保","beppu":"別府","kumamoto":"熊本"}
@@ -29,10 +29,10 @@ def extract_riders(page_text):
     pos=text.find("枠 車 選手名 AI 競走得点")
     if pos<0: pos=text.find("枠 車 選手名")
     if pos<0: return [], text[:3000]
+    # ページによっては「並び予想」などの見出しが選手表の途中に現れるため、
+    # 以前のように見出しで切り詰めない。選手表の開始位置以降を解析し、
+    # 車番ごとに最初に見つかった候補だけを採用する。
     tail=text[pos:]
-    for stop in ("並び予想", "結果 勝ち上がり条件", "勝ち上がり条件"):
-        i=tail.find(stop)
-        if i>=0: tail=tail[:i]; break
     # 都道府県名を固定候補にして、選手名と府県名の境界を曖昧にしない
     prefectures = ["北海道","青森","岩手","宮城","秋田","山形","福島","茨城","栃木","群馬","埼玉","千葉","東京","神奈川","新潟","富山","石川","福井","山梨","長野","岐阜","静岡","愛知","三重","滋賀","京都","大阪","兵庫","奈良","和歌山","鳥取","島根","岡山","広島","山口","徳島","香川","愛媛","高知","福岡","佐賀","長崎","熊本","大分","宮崎","鹿児島","沖縄"]
     pref_pattern = "|".join(sorted(prefectures, key=len, reverse=True))
@@ -49,9 +49,12 @@ def extract_riders(page_text):
         if car in seen: continue
         seen.add(car)
         rows.append({"枠番":int(d["w"]),"車番":car,"選手名":d["n"],"府県":d["p"],"級班":d["cl"],"年齢":int(d["age"]),"期別":int(d["reg"]),"競走得点":float(d["score"])})
+        # 通常の競輪は最大9車。1～9番車が揃ったら後続セクションを読まない。
+        if seen == set(range(1, 10)):
+            break
     return sorted(rows,key=lambda x:x["車番"]),tail[:4500]
 
-st.info("前回の本文には選手表が実際に含まれていました。今回はJSONを探さず、本文中の「枠・車・選手名・競走得点」から選手行を読み取ります。")
+st.info("前版で7番車が抜けたため、選手表の後ろを見出しで切る処理を外しました。車番ごとに最初の候補を採用します。")
 c1,c2=st.columns(2)
 with c1: load=st.button("出走表URL一覧を取得",type="primary",use_container_width=True)
 with c2: st.link_button("WINTICKET出走表一覧を開く",BASE_URL,use_container_width=True)
