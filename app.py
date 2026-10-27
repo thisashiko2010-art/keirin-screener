@@ -9,171 +9,154 @@ from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="競輪スクリーナー", page_icon="🚴", layout="wide")
 st.title("🚴 競輪スクリーナー")
-st.caption("個人利用向け試作版。開催日程は公式ページから取得し、確認できた項目だけを表示します。")
+st.caption("開催日程から実際の出走表リンクを探す試作版。自動投票は行いません。")
 
-SP_URL = "https://www.keirin.jp/sp/raceschedule"
-PC_URL = "https://www.keirin.jp/pc/raceschedule"
+RACECARD_URL = "https://www.winticket.jp/keirin/racecard/"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+}
 VENUES = [
-    "いわき平", "西武園", "京王閣", "小松島", "佐世保",
-    "函館", "青森", "弥彦", "前橋", "取手", "宇都宮", "大宮", "立川",
-    "松戸", "川崎", "平塚", "小田原", "伊東", "静岡", "名古屋", "岐阜",
-    "大垣", "豊橋", "富山", "松阪", "四日市", "福井", "奈良", "向日町",
-    "和歌山", "岸和田", "玉野", "広島", "防府", "高松", "高知", "松山",
-    "小倉", "久留米", "武雄", "別府", "熊本"
+    "函館", "青森", "いわき平", "弥彦", "前橋", "取手", "宇都宮", "大宮",
+    "西武園", "京王閣", "立川", "松戸", "千葉", "川崎", "平塚", "小田原",
+    "伊東", "静岡", "名古屋", "岐阜", "大垣", "豊橋", "富山", "松阪",
+    "四日市", "福井", "奈良", "向日町", "和歌山", "岸和田", "玉野",
+    "広島", "防府", "高松", "小松島", "高知", "松山", "小倉", "久留米",
+    "武雄", "佐世保", "別府", "熊本"
 ]
-DATE_RE = re.compile(
-    r"(?P<start>\d{1,2}/\d{1,2})\s*[（(]?[月火水木金土日][）)]?\s*[～〜〜〜\-－―〜]\s*"
-    r"(?P<end>\d{1,2}/\d{1,2})\s*[（(]?[月火水木金土日][）)]?"
-)
-DATE_SINGLE_RE = re.compile(r"\d{1,2}/\d{1,2}\s*[（(]?[月火水木金土日][）)]?")
 
-st.info("前回の失敗を踏まえ、スマホ版だけに依存せず、PC版・スマホ版の両方を調べます。詳細URLを推測で生成することはしません。")
-st.write(f"取得日：{date.today():%Y年%m月%d日}")
-col1, col2 = st.columns(2)
-with col1:
-    fetch = st.button("公式ページから開催情報を取得", type="primary", use_container_width=True)
-with col2:
-    st.link_button("KEIRIN.JP公式日程を開く", PC_URL, use_container_width=True)
+def clean(value):
+    return re.sub(r"\s+", " ", str(value)).strip()
 
-def clean(s):
-    return re.sub(r"\s+", " ", str(s)).strip()
+def get_html(url):
+    response = requests.get(url, headers=HEADERS, timeout=25)
+    response.raise_for_status()
+    response.encoding = response.apparent_encoding or "utf-8"
+    return response.text, response.status_code
 
-def extract_from_html(html, page_url):
+def parse_race_list(html, base_url):
     soup = BeautifulSoup(html, "html.parser")
-    link_rows = []
-    for a in soup.find_all("a", href=True):
-        label = clean(a.get_text(" ", strip=True))
-        href = urljoin(page_url, a["href"].strip())
-        if label and href.startswith(("http://", "https://")):
-            link_rows.append({"リンク名": label, "URL": href})
-
-    # Strategy 1: examine table rows, which is useful when the source renders a calendar as HTML tables.
-    rows = []
-    for table in soup.find_all("table"):
-        for tr in table.find_all("tr"):
-            cells = [clean(x.get_text(" ", strip=True)) for x in tr.find_all(["th", "td"])]
-            joined = " | ".join(x for x in cells if x)
-            if not joined:
+    # Identify event blocks by searching upward from each venue link, then collect 1R/2R links inside that block.
+    events = []
+    used_races = set()
+    for venue in VENUES:
+        venue_anchors = [
+            a for a in soup.find_all("a", href=True)
+            if venue in clean(a.get_text(" ", strip=True)) and "競輪" in clean(a.get_text(" ", strip=True))
+        ]
+        for va in venue_anchors:
+            node = va
+            chosen = None
+            # Find the nearest ancestor with a date range and several race-number links.
+            for _ in range(7):
+                if node is None:
+                    break
+                text = clean(node.get_text(" ", strip=True))
+                race_anchors = [
+                    a for a in node.find_all("a", href=True)
+                    if re.fullmatch(r"\d{1,2}R", clean(a.get_text(" ", strip=True)))
+                ]
+                if len(race_anchors) >= 3 and re.search(r"\d{1,2}/\d{1,2}", text):
+                    chosen = node
+                    break
+                node = node.parent
+            if chosen is None:
                 continue
-            venue = next((v for v in sorted(VENUES, key=len, reverse=True)
-                          if any(c == v or c.startswith(v + " ") for c in cells) or joined.startswith(v + " |")), None)
-            dm = DATE_RE.search(joined)
-            if venue and dm:
-                title = joined[dm.end():].strip(" |・")
-                title = re.sub(r"^(Image\s*)+", "", title).strip()
-                if title and not title.startswith("開催がありません"):
-                    rows.append({"競輪場": venue, "開催期間": dm.group(0), "開催名": title})
+            block_text = clean(chosen.get_text(" ", strip=True))
+            dates = re.findall(r"\d{1,2}/\d{1,2}", block_text)
+            title = ""
+            for line in chosen.stripped_strings:
+                line = clean(line)
+                if line and venue not in line and not re.fullmatch(r"\d{1,2}R", line) and not re.fullmatch(r"\d{1,2}/\d{1,2}", line):
+                    if len(line) < 100 and not any(x in line for x in ("前日", "翌日", "出走表一覧", "WINTICKET")):
+                        title = line
+            event_key = (venue, tuple(dates[:2]), title)
+            if any(e["開催キー"] == event_key for e in events):
+                continue
+            races = []
+            for a in race_anchors:
+                race_name = clean(a.get_text(" ", strip=True))
+                race_url = urljoin(base_url, a["href"])
+                key = (venue, race_name, race_url)
+                if key in used_races:
+                    continue
+                used_races.add(key)
+                races.append({"競輪場": venue, "レース": race_name, "出走表URL": race_url})
+            if races:
+                events.append({
+                    "開催キー": event_key,
+                    "競輪場": venue,
+                    "開催期間": "〜".join(dates[:2]) if dates else "日付未抽出",
+                    "開催名": title or "開催名未抽出",
+                    "レース数": len(races),
+                    "レース": races,
+                })
+    return events, soup
 
-    # Strategy 2: read the page's text in order. Keep venue context and pair date ranges with the next plausible event title.
-    for tag in soup(["script", "style", "noscript", "svg"]):
-        tag.decompose()
-    tokens = [clean(x) for x in soup.stripped_strings if clean(x)]
-    current_venue = None
-    pending_date = None
-    for i, token in enumerate(tokens):
-        # Venue headings are often individual text nodes in the mobile page.
-        found_venue = next((v for v in sorted(VENUES, key=len, reverse=True)
-                            if token == v or token.startswith(v + " ")), None)
-        if found_venue:
-            current_venue = found_venue
-            pending_date = None
-            continue
-        dm = DATE_RE.search(token)
-        if dm and current_venue:
-            pending_date = dm.group(0)
-            # Some layouts place event title in the same text token after the date.
-            remainder = token[dm.end():].strip(" |・")
-            if remainder and len(remainder) <= 120:
-                rows.append({"競輪場": current_venue, "開催期間": pending_date, "開催名": remainder})
-                pending_date = None
-            continue
-        if pending_date and current_venue:
-            if token not in VENUES and not token.startswith(("開催がありません", "Image", "開く")) and len(token) <= 120:
-                if not DATE_SINGLE_RE.fullmatch(token):
-                    rows.append({"競輪場": current_venue, "開催期間": pending_date, "開催名": token})
-                    pending_date = None
-
-    # Remove navigation labels and obvious malformed rows.
-    cleaned = []
-    for row in rows:
-        venue = row["競輪場"]
-        title = clean(row["開催名"])
-        period = clean(row["開催期間"])
-        if title and title not in VENUES and not title.startswith(("開催日程", "グレードレース")):
-            cleaned.append({"競輪場": venue, "開催期間": period, "開催名": title})
-    df = pd.DataFrame(cleaned, columns=["競輪場", "開催期間", "開催名"])
-    if not df.empty:
-        df = df.drop_duplicates().reset_index(drop=True)
-    return df, link_rows, tokens
+st.info("前の版では公式日程ページから出走表への直接リンクを見つけられませんでした。今回は、当日の出走表リンクが一覧化されている公開ページを入口として使い、実在するリンクを抽出します。")
+st.write(f"取得日：{date.today():%Y年%m月%d日}")
+left, right = st.columns(2)
+with left:
+    fetch = st.button("本日の出走表一覧を取得", type="primary", use_container_width=True)
+with right:
+    st.link_button("出走表一覧をブラウザで開く", RACECARD_URL, use_container_width=True)
 
 if fetch:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-    }
-    successes = []
-    failures = []
-    with st.spinner("公式ページ2種類を確認しています…"):
-        for page_url in (SP_URL, PC_URL):
-            try:
-                response = requests.get(page_url, headers=headers, timeout=25)
-                response.raise_for_status()
-                response.encoding = response.apparent_encoding or "utf-8"
-                df, links, tokens = extract_from_html(response.text, page_url)
-                successes.append((page_url, response.status_code, df, links, tokens, len(response.text)))
-            except Exception as exc:
-                failures.append(f"{page_url}: {type(exc).__name__}: {exc}")
-
-    if successes:
-        st.success("公式ページへの接続に成功しました。")
-        # Prefer the source that actually yielded more event rows.
-        successes.sort(key=lambda item: len(item[2]), reverse=True)
-        page_url, status, df, links, tokens, html_size = successes[0]
-        st.caption(f"主に使用したページ：{page_url} ／ HTTP {status} ／ HTML {html_size:,}文字")
-        st.subheader("開催情報")
-        if not df.empty:
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            st.success(f"{len(df)}件の開催候補を抽出しました。日程・開催名は公式ページで照合してください。")
+    try:
+        with st.spinner("出走表一覧を取得して、実際のレースリンクを調べています…"):
+            html, status = get_html(RACECARD_URL)
+            events, soup = parse_race_list(html, RACECARD_URL)
+        st.success(f"一覧ページを取得しました（HTTP {status}）。")
+        if events:
+            st.subheader("開催一覧")
+            summary = pd.DataFrame([{
+                "競輪場": e["競輪場"],
+                "開催期間": e["開催期間"],
+                "開催名": e["開催名"],
+                "抽出レース数": e["レース数"],
+            } for e in events])
+            st.dataframe(summary, use_container_width=True, hide_index=True)
+            all_races = [race for event in events for race in event["レース"]]
+            st.subheader("出走表リンク")
+            st.write(f"実在するリンクを {len(all_races)} 件抽出しました。")
+            st.dataframe(pd.DataFrame(all_races), use_container_width=True, hide_index=True)
+            st.download_button(
+                "出走表リンク一覧をCSV保存",
+                data=pd.DataFrame(all_races).to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"keirin_race_links_{date.today():%Y%m%d}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+            st.session_state["keirin_events"] = events
         else:
-            st.warning("接続はできましたが、HTMLから開催情報を確実に組み合わせられませんでした。誤った開催一覧は表示しません。")
-
-        # Show only links that are plausibly event/race details, not the two schedule navigation links.
-        detail_links = []
-        seen = set()
-        for item in links:
-            text = (item["リンク名"] + " " + item["URL"]).lower()
-            if any(w in text for w in ("racecard", "racedetail", "race_detail", "odds", "出走表", "レース詳細", "kaisai")):
-                if item["URL"] not in seen:
-                    seen.add(item["URL"])
-                    detail_links.append(item)
-        st.subheader("レース関連リンク")
-        if detail_links:
-            st.dataframe(pd.DataFrame(detail_links[:100]), use_container_width=True, hide_index=True)
-        else:
-            st.caption("開催日程ページのHTMLには、出走表への直接リンクが見つかりませんでした。URLは推測で作成していません。")
-
-        with st.expander("診断情報（必要な場合だけ開く）"):
-            st.write("各ページの抽出件数")
-            st.dataframe(pd.DataFrame([
-                {"ページ": x[0], "HTTP": x[1], "抽出件数": len(x[2]), "HTML文字数": x[5]}
-                for x in successes
-            ]), use_container_width=True, hide_index=True)
-            st.write("本文テキストの先頭100項目")
-            st.code("\n".join(tokens[:100])[:10000])
-            st.write("取得リンクの先頭60件")
-            st.code("\n".join(f'{x["リンク名"]} -> {x["URL"]}' for x in links[:60])[:10000])
-    else:
-        st.error("公式ページの取得に失敗しました。")
-    if failures:
-        with st.expander("取得エラーの詳細"):
-            st.code("\n".join(failures))
+            st.warning("ページへの接続は成功しましたが、開催ブロックとレースリンクの組み合わせを特定できませんでした。推測したURLは表示しません。")
+        with st.expander("診断情報"):
+            st.write(f"HTML文字数：{len(html):,}")
+            st.write("ページ内の競輪場リンク")
+            venue_links = []
+            for a in soup.find_all("a", href=True):
+                label = clean(a.get_text(" ", strip=True))
+                if any(v in label for v in VENUES) and "競輪" in label:
+                    venue_links.append({"表示名": label, "URL": urljoin(RACECARD_URL, a["href"])})
+            if venue_links:
+                st.dataframe(pd.DataFrame(venue_links).drop_duplicates(), use_container_width=True, hide_index=True)
+            st.write("1R〜12Rのリンク先（先頭100件）")
+            race_links = []
+            for a in soup.find_all("a", href=True):
+                label = clean(a.get_text(" ", strip=True))
+                if re.fullmatch(r"\d{1,2}R", label):
+                    race_links.append({"レース": label, "URL": urljoin(RACECARD_URL, a["href"])})
+            st.dataframe(pd.DataFrame(race_links).drop_duplicates().head(100), use_container_width=True, hide_index=True)
+    except Exception as exc:
+        st.error("出走表一覧を取得できませんでした。")
+        st.code(f"{type(exc).__name__}: {exc}")
 
 st.divider()
-st.subheader("開発状況")
+st.subheader("次の開発段階")
 st.markdown("""
-- 開催日程：公式PC版・スマホ版を取得して抽出を試行
-- 開催場・期間・開催名：抽出できた候補のみ表示。確実に取れない場合は空欄のままにする
-- 出走表・ライン・オッズ・バンク特性・当日の風：まだ未実装
-- 自動投票：行いません
+- 現在：開催一覧から実際の出走表URLを抽出する
+- 次：選択したレースの選手・脚質・競走得点・ライン情報を読み取る
+- その次：オッズ取得、期待値計算、バンク特性と当日の風の反映
+- 買い目候補は1日最大1,000円以内で提示し、投票操作は行わない
 """)
-st.caption("この版は開催日程の抽出改善を検証するものです。予想精度や利益を保証するものではありません。")
+st.caption("情報提供元：WINTICKET公開出走表一覧。表示内容は公式情報等と照合してください。利用規約・アクセス制限に従って使用してください。")
