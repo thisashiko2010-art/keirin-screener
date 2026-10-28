@@ -6,9 +6,9 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="競輪スクリーナー v19", page_icon="🚴", layout="wide")
+st.set_page_config(page_title="競輪スクリーナー v21", page_icon="🚴", layout="wide")
 st.title("🚴 競輪スクリーナー")
-st.caption("v19：開催日計算を修正、選手・ライン抽出、券種別候補の形式確認。自動投票は行いません。")
+st.caption("v21：選手・ライン・開催日機能を維持し、券種切替のJavaScript/埋め込みデータ診断を追加。自動投票は行いません。")
 BASE_URL = "https://www.winticket.jp/keirin/racecard"
 HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","Accept-Language":"ja,en-US;q=0.9,en;q=0.8"}
 VENUES = {"hakodate":"函館","aomori":"青森","yahiko":"弥彦","maebashi":"前橋","toride":"取手","utsunomiya":"宇都宮","omiya":"大宮","seibuen":"西武園","keiokaku":"京王閣","tachikawa":"立川","matsudo":"松戸","chiba":"千葉","kawasaki":"川崎","hiratsuka":"平塚","odawara":"小田原","ito":"伊東","shizuoka":"静岡","nagoya":"名古屋","gifu":"岐阜","ogaki":"大垣","toyohashi":"豊橋","toyama":"富山","matsusaka":"松阪","yokkaichi":"四日市","fukui":"福井","nara":"奈良","mukomachi":"向日町","wakayama":"和歌山","kishiwada":"岸和田","tamano":"玉野","hiroshima":"広島","hofu":"防府","takamatsu":"高松","komatsushima":"小松島","kochi":"高知","matsuyama":"松山","kokura":"小倉","kurume":"久留米","takeo":"武雄","sasebo":"佐世保","beppu":"別府","kumamoto":"熊本"}
@@ -69,6 +69,31 @@ def extract_lines(page_text,riders):
             nums=[int(x) for x in re.findall(r"([1-9])\s*(?:先行|追込|押え先|自在|追上|マーク|捲り|追走)?",m.group(1))]; nums=[n for n in nums if n in rider_cars]
             if len(nums)>=2 and len(nums)==len(set(nums)): return [nums],m.group(0)
     return [],"本文から明確なライン区切りを認識できませんでした。"
+
+def diagnose_scripts(html):
+    """Inspect script assets and embedded payloads to locate dynamic odds data."""
+    soup = BeautifulSoup(html, "html.parser")
+    script_rows = []
+    keyword_rows = []
+    keywords = ["odds", "Odds", "ODDS", "trifecta", "quinella", "wide", "2車単", "3連単", "ワイド", "betType", "bet_type", "raceId", "race_id", "__NEXT_DATA__", "application/json"]
+    for idx, tag in enumerate(soup.find_all("script")):
+        src = tag.get("src", "")
+        typ = tag.get("type", "")
+        body = tag.string or tag.get_text(" ", strip=False) or ""
+        script_rows.append({"番号": idx, "type": typ, "src": urljoin("https://www.winticket.jp", src) if src else "(inline script)", "本文文字数": len(body)})
+        if body.strip():
+            for kw in keywords:
+                pos = body.lower().find(kw.lower())
+                if pos >= 0:
+                    excerpt = re.sub(r"\s+", " ", body[max(0, pos-180):min(len(body), pos+420)]).strip()
+                    keyword_rows.append({"script番号": idx, "キーワード": kw, "抜粋": excerpt})
+    # Capture page-level preload JSON and resource hints as well.
+    json_blocks = []
+    for idx, tag in enumerate(soup.find_all("script", attrs={"type": re.compile("json", re.I)})):
+        body = tag.string or tag.get_text(" ", strip=False) or ""
+        if body.strip():
+            json_blocks.append({"script番号": idx, "type": tag.get("type", ""), "文字数": len(body), "先頭": re.sub(r"\s+", " ", body[:1600]).strip()})
+    return script_rows, keyword_rows[:100], json_blocks
 
 def odds_url_from_racecard(url):
     # WINTICKETの同一レースパスの odds 版を試す。実際のURL形式は取得時に検証する。
@@ -164,12 +189,13 @@ if isinstance(races_all,pd.DataFrame) and not races_all.empty:
                     riders,diag=extract_riders(page_text)
                     lines,line_source=extract_lines(page_text,riders)
                 odds_url=odds_url_from_racecard(race_url)
-                odds_result={"url":odds_url,"status":None,"html_len":0,"bet_types":[],"rows":[],"text":"","error":None}
+                odds_result={"url":odds_url,"status":None,"html_len":0,"bet_types":[],"rows":[],"text":"","error":None,"scripts":[],"script_keywords":[],"json_blocks":[]}
                 try:
                     with st.spinner("オッズページを取得中…"):
                         odds_html,odds_status=get_html(odds_url)
                     bet_types,odds_rows,odds_text=extract_odds(odds_html)
-                    odds_result.update({"status":odds_status,"html_len":len(odds_html),"bet_types":bet_types,"rows":odds_rows,"text":odds_text})
+                    script_rows, keyword_rows, json_blocks = diagnose_scripts(odds_html)
+                    odds_result.update({"status":odds_status,"html_len":len(odds_html),"bet_types":bet_types,"rows":odds_rows,"text":odds_text,"scripts":script_rows,"script_keywords":keyword_rows,"json_blocks":json_blocks})
                 except Exception as oe:
                     odds_result["error"]=f"{type(oe).__name__}: {oe}"
                 st.session_state["last_result"]={"race_url":race_url,"race_label":choice,"rider_status":status,"html_len":len(html),"riders":riders,"rider_diag":diag,"lines":lines,"line_source":line_source,"odds":odds_result,"fetched_at":pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -223,6 +249,24 @@ if result:
             st.warning("HTTP取得はできましたが、組番・オッズ候補を認識できませんでした。")
         with st.expander("オッズページ本文の診断抜粋"):
             st.code(odds["text"][:5000] if odds["text"] else "本文テキストなし")
+        with st.expander("券種切替の調査：JavaScript一覧"):
+            st.caption("券種ごとのオッズが初期HTMLに含まれるか、JavaScript側で後から読み込まれるかを調べるための診断です。ここでは通信を実行したり投票したりしません。")
+            if odds.get("scripts"):
+                st.dataframe(pd.DataFrame(odds["scripts"]), use_container_width=True, hide_index=True)
+                st.download_button("JavaScript一覧CSV保存", pd.DataFrame(odds["scripts"]).to_csv(index=False).encode("utf-8-sig"), f"winticket_scripts_{date.today():%Y%m%d}.csv", "text/csv", key="download_scripts")
+            else:
+                st.warning("scriptタグが見つかりませんでした。")
+        with st.expander("券種切替の調査：スクリプト内キーワード"):
+            if odds.get("script_keywords"):
+                st.dataframe(pd.DataFrame(odds["script_keywords"]), use_container_width=True, hide_index=True)
+                st.download_button("キーワード抜粋CSV保存", pd.DataFrame(odds["script_keywords"]).to_csv(index=False).encode("utf-8-sig"), f"winticket_script_keywords_{date.today():%Y%m%d}.csv", "text/csv", key="download_script_keywords")
+            else:
+                st.warning("オッズ関連キーワードを含むインラインスクリプトは見つかりませんでした。外部JavaScript一覧を確認してください。")
+        with st.expander("券種切替の調査：埋め込みJSON"):
+            if odds.get("json_blocks"):
+                st.dataframe(pd.DataFrame(odds["json_blocks"]), use_container_width=True, hide_index=True)
+            else:
+                st.info("JSON形式のscriptブロックは見つかりませんでした。")
     with st.expander("出走表の抽出診断"):
         st.code(result["rider_diag"])
 st.divider()
