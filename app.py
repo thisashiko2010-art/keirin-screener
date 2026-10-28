@@ -52,15 +52,70 @@ def summarize_query_state(state):
             })
     return rows, odds_payloads
 
+BET_TYPE_MAP = {
+    "3連単": "trifecta",
+    "3連複": "trio",
+    "2車単": "exacta",
+    "2車複": "quinella",
+    "ワイド": "quinellaPlace",
+    "枠単": "bracketExacta",
+    "枠複": "bracketQuinella",
+}
+
+def extract_preloaded_odds(state):
+    """Return odds payload from the WINTICKET embedded TanStack query cache."""
+    if not isinstance(state, dict):
+        return None, None
+    queries = state.get("tanStackQuery", {}).get("queries", [])
+    for query in queries:
+        key = query.get("queryKey", [])
+        if isinstance(key, list) and len(key) >= 2 and key[0] == "keirin/race/odds" and key[1] == "FETCH_KEIRIN_RACE_ODDS":
+            data = query.get("state", {}).get("data")
+            if isinstance(data, dict):
+                return data, key
+    return None, None
+
+def odds_rows_for_bet_type(odds_payload, bet_type):
+    """Normalize confirmed odds rows for one named bet type."""
+    if not isinstance(odds_payload, dict):
+        return []
+    source_key = BET_TYPE_MAP.get(bet_type)
+    source_rows = odds_payload.get(source_key, []) if source_key else []
+    rows = []
+    for item in source_rows if isinstance(source_rows, list) else []:
+        if not isinstance(item, dict):
+            continue
+        combo = item.get("key", [])
+        if not isinstance(combo, list) or not combo:
+            continue
+        row = {"組番": "-".join(str(n) for n in combo), "人気順": item.get("popularityOrder"), "発売対象外": item.get("absent", False)}
+        odds = item.get("odds")
+        minimum = item.get("minOdds")
+        maximum = item.get("maxOdds")
+        if bet_type == "ワイド":
+            if minimum not in (None, 0) or maximum not in (None, 0):
+                row["オッズ"] = f"{minimum:g}〜{maximum:g}倍" if isinstance(minimum, (int, float)) and isinstance(maximum, (int, float)) else f"{item.get('minOddsStr', '')}〜{item.get('maxOddsStr', '')}倍"
+            elif isinstance(odds, (int, float)) and odds > 0:
+                row["オッズ"] = f"{odds:g}倍"
+            else:
+                row["オッズ"] = "—"
+        else:
+            if isinstance(odds, (int, float)) and odds > 0:
+                row["オッズ"] = f"{odds:g}倍"
+            else:
+                row["オッズ"] = "—"
+        rows.append(row)
+    return rows
+
 def json_safe_summary(value, max_chars=16000):
     try:
         return json.dumps(value, ensure_ascii=False, indent=2, default=str)[:max_chars]
     except Exception as exc:
         return f"JSON表示失敗: {type(exc).__name__}: {exc}"
 
-st.set_page_config(page_title="競輪スクリーナー v26", page_icon="🚴", layout="wide")
+st.set_page_config(page_title="競輪スクリーナー v27", page_icon="🚴", layout="wide")
 st.title("🚴 競輪スクリーナー")
-st.caption("v26：出走表HTMLのPRELOADED_STATEと券種別オッズクエリを診断。自動投票はしません。")
+st.caption("v27：埋め込みJSON内の券種別オッズを読み取り表示。自動投票はしません。")
 BASE_URL = "https://www.winticket.jp/keirin/racecard"
 HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","Accept-Language":"ja,en-US;q=0.9,en;q=0.8"}
 VENUES = {"hakodate":"函館","aomori":"青森","yahiko":"弥彦","maebashi":"前橋","toride":"取手","utsunomiya":"宇都宮","omiya":"大宮","seibuen":"西武園","keiokaku":"京王閣","tachikawa":"立川","matsudo":"松戸","chiba":"千葉","kawasaki":"川崎","hiratsuka":"平塚","odawara":"小田原","ito":"伊東","shizuoka":"静岡","nagoya":"名古屋","gifu":"岐阜","ogaki":"大垣","toyohashi":"豊橋","toyama":"富山","matsusaka":"松阪","yokkaichi":"四日市","fukui":"福井","nara":"奈良","mukomachi":"向日町","wakayama":"和歌山","kishiwada":"岸和田","tamano":"玉野","hiroshima":"広島","hofu":"防府","takamatsu":"高松","komatsushima":"小松島","kochi":"高知","matsuyama":"松山","kokura":"小倉","kurume":"久留米","takeo":"武雄","sasebo":"佐世保","beppu":"別府","kumamoto":"熊本"}
@@ -322,7 +377,7 @@ if isinstance(races_all,pd.DataFrame) and not races_all.empty:
                     odds_result.update({"status":odds_status,"html_len":len(odds_html),"bet_types":bet_types,"rows":odds_rows,"text":odds_text,"scripts":script_rows,"script_keywords":keyword_rows,"json_blocks":json_blocks,"external_js_diag":external_js_diag,"api_test":api_test})
                 except Exception as oe:
                     odds_result["error"]=f"{type(oe).__name__}: {oe}"
-                st.session_state["last_result"]={"race_url":race_url,"race_label":choice,"rider_status":status,"html_len":len(html),"riders":riders,"rider_diag":diag,"lines":lines,"line_source":line_source,"preload_state":preload_state,"preload_error":preload_error,"preload_query_rows":preload_query_rows,"preload_odds_payloads":preload_odds_payloads,"odds":odds_result,"fetched_at":pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}
+                st.session_state["last_result"]={"race_url":race_url,"race_label":choice,"rider_status":status,"html_len":len(html),"riders":riders,"rider_diag":diag,"lines":lines,"line_source":line_source,"preload_state":preload_state,"preload_error":preload_error,"preload_query_rows":preload_query_rows,"preload_odds_payloads":preload_odds_payloads,"preload_odds_data":extract_preloaded_odds(preload_state)[0] if preload_state else None,"preload_odds_key":extract_preloaded_odds(preload_state)[1] if preload_state else None,"odds":odds_result,"fetched_at":pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}
             except Exception as e:
                 st.error(f"出走表処理失敗：{type(e).__name__}: {e}")
 
@@ -347,7 +402,36 @@ if result:
         for i,g in enumerate(result["lines"],1): st.write(f"ライン{i}: "+" - ".join(f"{n} {names.get(n,'選手名不明')}" for n in g))
         st.caption("抽出元: "+result["line_source"])
     else: st.warning(result["line_source"])
-    st.subheader("埋め込みJSON診断（v26）")
+    st.subheader("券種別オッズ（v27・埋め込みJSON）")
+    preload_odds = result.get("preload_odds_data")
+    if isinstance(preload_odds, dict):
+        update_ts = preload_odds.get("oddsUpdatedAt")
+        if isinstance(update_ts, (int, float)) and update_ts > 0:
+            try:
+                update_text = pd.to_datetime(update_ts, unit="s", utc=True).tz_convert("Asia/Tokyo").strftime("%Y-%m-%d %H:%M:%S JST")
+            except Exception:
+                update_text = str(update_ts)
+        else:
+            update_text = "不明"
+        st.caption(f"オッズ更新時刻：{update_text} ／ 遅延フラグ：{preload_odds.get('oddsDelayed', '不明')} ／ 最終オッズフラグ：{preload_odds.get('finalOdds', '不明')}")
+        st.warning("埋め込みJSON内の値を表示しています。取得時点の値であり、リアルタイム性は保証されません。")
+        selected_rows = odds_rows_for_bet_type(preload_odds, selected_bet_type)
+        source_key = BET_TYPE_MAP.get(selected_bet_type, "")
+        raw_count = len(preload_odds.get(source_key, [])) if isinstance(preload_odds.get(source_key, []), list) else 0
+        if selected_rows:
+            st.success(f"{selected_bet_type}：{len(selected_rows)}件を読み取りました。")
+            odds_df = pd.DataFrame(selected_rows)
+            st.dataframe(odds_df, use_container_width=True, hide_index=True)
+            st.download_button("表示中の券種オッズをCSV保存", odds_df.to_csv(index=False).encode("utf-8-sig"), f"keirin_{source_key}_odds_{date.today():%Y%m%d}.csv", "text/csv", key="download_preloaded_odds_table")
+        else:
+            st.info(f"{selected_bet_type}のオッズ行は、この埋め込みデータ内では0件です。7車立てでは枠単・枠複が含まれない場合がありますが、0件だけで理由までは断定できません。")
+        with st.expander("券種ごとのデータ件数"):
+            summary = [{"券種": name, "データ件数": len(preload_odds.get(key, [])) if isinstance(preload_odds.get(key, []), list) else 0} for name, key in BET_TYPE_MAP.items()]
+            st.dataframe(pd.DataFrame(summary), use_container_width=True, hide_index=True)
+    else:
+        st.info("このレースページの埋め込みJSONから券種別オッズを検出できませんでした。診断欄でクエリの有無を確認してください。")
+
+    st.subheader("埋め込みJSON診断（v27）")
     if result.get("preload_state"):
         st.success("window.__PRELOADED_STATE__ を抽出できました。")
         query_rows = result.get("preload_query_rows", [])
@@ -453,4 +537,4 @@ if result:
     with st.expander("出走表の抽出診断"):
         st.code(result["rider_diag"])
 st.divider()
-st.markdown("注意：券種別のオッズ取得はまだ未完成です。埋め込みJSONにオッズらしいデータがあっても、組番・券種・更新時刻の対応を検証できるまで期待値計算には使用しません。1日予算上限1,000円、購入は手動です。")
+st.markdown("注意：埋め込みJSONから券種別オッズを表示しますが、取得時刻以降の更新は保証しません。期待値計算に使う前に公式画面と照合してください。1日予算上限1,000円、購入は手動です。")
