@@ -93,77 +93,117 @@ def extract_odds(html):
         if key not in seen: seen.add(key); dedup.append(row)
     return present,dedup,text
 
-st.info("初期値は今日。開催一覧から対象日を選び、出走表・ラインを取得できます。オッズはページ構造を検証中で、確実に読めた値だけを候補表示します。")
+st.info("初期値は今日。開催一覧は更新時に既存URLと統合し、取得件数が減っても一覧を不用意に縮めません。オッズ券種の切替は取得データの券種判定ができるまで診断用です。")
 date_col,btn_col,link_col=st.columns([1.2,1,1])
 with date_col: target_date=st.date_input("開催日",value=date.today())
 with btn_col: load=st.button("開催一覧を更新",type="primary",use_container_width=True)
 with link_col: st.link_button("WINTICKET出走表一覧",BASE_URL,use_container_width=True)
+
+if "races_all" not in st.session_state:
+    st.session_state["races_all"] = pd.DataFrame(columns=["競輪場","開催ID","開催日番号","レース","URL"])
 if load:
     try:
         with st.spinner("一覧を取得中…"):
-            html,status=get_html(BASE_URL); races=extract_races(html)
-        st.session_state["races_all"]=races
-        st.success(f"一覧取得成功（HTTP {status}）。サイトからURL {len(races)} 件を検出。")
-    except Exception as e: st.error(f"開催一覧取得失敗：{type(e).__name__}: {e}")
+            html,status=get_html(BASE_URL); fresh=extract_races(html)
+        old=st.session_state["races_all"]
+        if isinstance(old,pd.DataFrame) and not old.empty:
+            combined=pd.concat([old,fresh],ignore_index=True).drop_duplicates("URL",keep="last")
+        else:
+            combined=fresh
+        st.session_state["races_all"]=combined.reset_index(drop=True)
+        st.session_state["races_last_fetch_count"]=len(fresh)
+        st.session_state["races_last_http"]=status
+        if len(fresh) < len(old) and len(old)>0:
+            st.warning(f"今回の再取得は {len(fresh)} 件で、前回保持分 {len(old)} 件より少ないため、既存URLを保持して統合しました。現在の重複除去後は {len(combined)} 件です。")
+        else:
+            st.success(f"一覧取得成功（HTTP {status}）。今回 {len(fresh)} 件、保持・統合後 {len(combined)} 件。")
+    except Exception as e:
+        st.error(f"開催一覧取得失敗：{type(e).__name__}: {e}")
+
 races_all=st.session_state.get("races_all")
 if isinstance(races_all,pd.DataFrame) and not races_all.empty:
-    day_key=target_date.strftime("%Y%m%d"); races=races_all[races_all["開催ID"].astype(str).str.startswith(day_key)].copy()
+    day_key=target_date.strftime("%Y%m%d")
+    races=races_all[races_all["開催ID"].astype(str).str.startswith(day_key)].copy()
     st.subheader(f"{target_date:%Y年%m月%d日} の開催")
-    if races.empty: st.warning("指定日のURLが一覧にありません。日付を変更するか、開催一覧を更新してください。")
+    st.caption(f"保持中URL総数：{len(races_all)}件")
+    if races.empty:
+        st.warning("指定日のURLが保持一覧にありません。開催一覧を更新してください。")
     else:
         st.success(f"指定日のレースURL：{len(races)}件")
         opts=[f'{r["競輪場"]} {r["レース"]} — {r["URL"]}' for _,r in races.iterrows()]
-        choice=st.selectbox("調査するレース",opts); selected=races.iloc[opts.index(choice)]; race_url=selected["URL"]
+        previous=st.session_state.get("selected_race_option")
+        default_index=opts.index(previous) if previous in opts else 0
+        choice=st.selectbox("調査するレース",opts,index=default_index,key="race_choice")
+        st.session_state["selected_race_option"]=choice
+        selected=races.iloc[opts.index(choice)]
+        race_url=selected["URL"]
+        selected_bet_type=st.selectbox(
+            "表示・照合したい券種",
+            ["3連単", "3連複", "2車単", "2車複", "ワイド", "枠単", "枠複"],
+            key="selected_bet_type",
+            help="券種の選択は保持されます。ただし、現状の取得処理はページ全体から数値候補を拾う診断段階で、券種別のオッズに絞り込めているとは限りません。"
+        )
         if st.button("選手・ライン・オッズ情報を取得",use_container_width=True):
             try:
                 with st.spinner("出走表を解析中…"):
-                    html,status=get_html(race_url); soup=BeautifulSoup(html,"html.parser"); page_text=soup.get_text(" ",strip=True); riders,diag=extract_riders(page_text); lines,line_source=extract_lines(page_text,riders)
-                st.subheader("選手データ")
-                st.write(f"出走表HTTP {status}／HTML {len(html):,}文字／抽出人数 {len(riders)}人")
-                if riders:
-                    df=pd.DataFrame(riders); st.dataframe(df,use_container_width=True,hide_index=True)
-                    missing=sorted(set(range(1,max(r["車番"] for r in riders)+1))-set(r["車番"] for r in riders))
-                    if missing: st.warning(f"車番 {missing} の取得漏れ候補。予想に使う前に照合してください。")
-                    st.download_button("選手データCSV保存",df.to_csv(index=False).encode("utf-8-sig"),f"keirin_riders_{date.today():%Y%m%d}.csv","text/csv")
-                else: st.warning("選手データを認識できませんでした。")
-                st.subheader("並び・ライン予想")
-                if lines:
-                    names={r["車番"]:r["選手名"] for r in riders}
-                    for i,g in enumerate(lines,1): st.write(f"ライン{i}: "+" - ".join(f"{n} {names.get(n,'選手名不明')}" for n in g))
-                    st.caption("抽出元: "+line_source)
-                else: st.warning(line_source)
-                st.subheader("オッズ取得・券種選択")
-                selected_bet_type = st.selectbox(
-                    "確認したい券種",
-                    ["3連単", "3連複", "2車単", "2車複", "ワイド", "枠単", "枠複"],
-                    key="selected_bet_type",
-                    help="ここで選ぶのは表示・整理用の指定です。取得元ページの券種見出しと一致することを確認するまでは、確定オッズとして扱いません。"
-                )
-                st.info(f"選択中の券種：{selected_bet_type}。取得した数値がこの券種のものか、ページ上の券種見出しと必ず照合してください。")
+                    html,status=get_html(race_url)
+                    soup=BeautifulSoup(html,"html.parser")
+                    page_text=soup.get_text(" ",strip=True)
+                    riders,diag=extract_riders(page_text)
+                    lines,line_source=extract_lines(page_text,riders)
                 odds_url=odds_url_from_racecard(race_url)
-                st.write("推定した同一レースのオッズURL：")
-                st.code(odds_url)
-                st.link_button("オッズページをブラウザで確認",odds_url,use_container_width=True)
+                odds_result={"url":odds_url,"status":None,"html_len":0,"bet_types":[],"rows":[],"text":"","error":None}
                 try:
                     with st.spinner("オッズページを取得中…"):
                         odds_html,odds_status=get_html(odds_url)
-                    st.write(f"オッズURL HTTP {odds_status}／HTML {len(odds_html):,}文字")
                     bet_types,odds_rows,odds_text=extract_odds(odds_html)
-                    st.write("ページ内で見つかった券種見出し："+("、".join(bet_types) if bet_types else "未検出"))
-                    if odds_rows:
-                        odds_df = pd.DataFrame(odds_rows)
-                        odds_df.insert(0, "選択券種（未検証）", selected_bet_type)
-                        st.warning("以下は組番・数値の機械的な候補です。選択券種は手動ラベルであり、サイト上の券種を自動判定したものではありません。券種の見出しと組番の意味を照合するまで、予想や期待値計算には使わないでください。")
-                        st.dataframe(odds_df,use_container_width=True,hide_index=True)
-                        st.download_button("オッズ候補CSV保存",odds_df.to_csv(index=False).encode("utf-8-sig"),f"keirin_odds_candidates_{date.today():%Y%m%d}.csv","text/csv")
-                    else:
-                        st.warning("HTTP取得はできましたが、組番・オッズ候補を認識できませんでした。券種ごとの画面構造を診断します。")
-                    with st.expander("オッズページ本文の診断抜粋"):
-                        st.code(odds_text[:5000] if odds_text else "本文テキストなし")
-                except Exception as e:
-                    st.error(f"オッズURL取得に失敗：{type(e).__name__}: {e}")
-                    st.info("オッズページのURL形式が違うか、サイト側が直接取得を制限している可能性があります。下のリンクからブラウザで開けるか確認してください。")
-                with st.expander("出走表の抽出診断"): st.code(diag)
-            except Exception as e: st.error(f"出走表処理失敗：{type(e).__name__}: {e}")
+                    odds_result.update({"status":odds_status,"html_len":len(odds_html),"bet_types":bet_types,"rows":odds_rows,"text":odds_text})
+                except Exception as oe:
+                    odds_result["error"]=f"{type(oe).__name__}: {oe}"
+                st.session_state["last_result"]={"race_url":race_url,"race_label":choice,"rider_status":status,"html_len":len(html),"riders":riders,"rider_diag":diag,"lines":lines,"line_source":line_source,"odds":odds_result,"fetched_at":pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}
+            except Exception as e:
+                st.error(f"出走表処理失敗：{type(e).__name__}: {e}")
+
+result=st.session_state.get("last_result")
+if result:
+    st.divider()
+    st.caption(f"最後の取得：{result['fetched_at']} ／ {result['race_label']}")
+    if result["race_url"] != st.session_state.get("selected_race_option", "") and False:
+        pass
+    st.subheader("選手データ")
+    st.write(f"出走表HTTP {result['rider_status']}／HTML {result['html_len']:,}文字／抽出人数 {len(result['riders'])}人")
+    if result["riders"]:
+        df=pd.DataFrame(result["riders"])
+        st.dataframe(df,use_container_width=True,hide_index=True)
+        missing=sorted(set(range(1,max(r["車番"] for r in result["riders"])+1))-set(r["車番"] for r in result["riders"]))
+        if missing: st.warning(f"車番 {missing} の取得漏れ候補。予想に使う前に照合してください。")
+        st.download_button("選手データCSV保存",df.to_csv(index=False).encode("utf-8-sig"),f"keirin_riders_{date.today():%Y%m%d}.csv","text/csv",key="download_riders")
+    else: st.warning("選手データを認識できませんでした。")
+    st.subheader("並び・ライン予想")
+    if result["lines"]:
+        names={r["車番"]:r["選手名"] for r in result["riders"]}
+        for i,g in enumerate(result["lines"],1): st.write(f"ライン{i}: "+" - ".join(f"{n} {names.get(n,'選手名不明')}" for n in g))
+        st.caption("抽出元: "+result["line_source"])
+    else: st.warning(result["line_source"])
+    st.subheader("オッズ取得・券種照合")
+    odds=result["odds"]
+    st.write(f"推定オッズURL：{odds['url']}")
+    st.link_button("オッズページをブラウザで確認",odds["url"],use_container_width=True)
+    if odds["error"]:
+        st.error(f"オッズURL取得に失敗：{odds['error']}")
+    else:
+        st.write(f"オッズURL HTTP {odds['status']}／HTML {odds['html_len']:,}文字")
+        st.write("ページ内で見つかった券種見出し："+("、".join(odds["bet_types"]) if odds["bet_types"] else "未検出"))
+        st.info(f"選択中：{selected_bet_type}。券種選択は画面に保持されますが、現在の候補データは券種別に確定できていません。下表は選択した券種の確定オッズではありません。")
+        if odds["rows"]:
+            odds_df=pd.DataFrame(odds["rows"])
+            st.dataframe(odds_df,use_container_width=True,hide_index=True)
+            st.download_button("オッズ候補CSV保存",odds_df.to_csv(index=False).encode("utf-8-sig"),f"keirin_odds_candidates_{date.today():%Y%m%d}.csv","text/csv",key="download_odds")
+        else:
+            st.warning("HTTP取得はできましたが、組番・オッズ候補を認識できませんでした。")
+        with st.expander("オッズページ本文の診断抜粋"):
+            st.code(odds["text"][:5000] if odds["text"] else "本文テキストなし")
+    with st.expander("出走表の抽出診断"):
+        st.code(result["rider_diag"])
 st.divider()
-st.markdown("注意：オッズの抽出はまだ実証段階です。券種と組番を正しく識別できるまで期待値計算には使用しません。1日予算上限1,000円、購入は手動です。")
+st.markdown("注意：券種別のオッズ取得はまだ未完成です。組番と券種の対応を検証できるまで期待値計算には使用しません。1日予算上限1,000円、購入は手動です。")
