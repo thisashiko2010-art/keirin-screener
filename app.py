@@ -113,9 +113,9 @@ def json_safe_summary(value, max_chars=16000):
     except Exception as exc:
         return f"JSON表示失敗: {type(exc).__name__}: {exc}"
 
-st.set_page_config(page_title="競輪スクリーナー v27", page_icon="🚴", layout="wide")
-st.title("🚴 競輪スクリーナー")
-st.caption("v27：埋め込みJSON内の券種別オッズを読み取り表示。自動投票はしません。")
+st.set_page_config(page_title="競輪スクリーナー v28", page_icon="🚴", layout="wide")
+st.title("🚴 競輪スクリーナー v28")
+st.caption("v28：オッズ表示の切り分け版。画面上部の版番号で更新確認できます。自動投票はしません。")
 BASE_URL = "https://www.winticket.jp/keirin/racecard"
 HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","Accept-Language":"ja,en-US;q=0.9,en;q=0.8"}
 VENUES = {"hakodate":"函館","aomori":"青森","yahiko":"弥彦","maebashi":"前橋","toride":"取手","utsunomiya":"宇都宮","omiya":"大宮","seibuen":"西武園","keiokaku":"京王閣","tachikawa":"立川","matsudo":"松戸","chiba":"千葉","kawasaki":"川崎","hiratsuka":"平塚","odawara":"小田原","ito":"伊東","shizuoka":"静岡","nagoya":"名古屋","gifu":"岐阜","ogaki":"大垣","toyohashi":"豊橋","toyama":"富山","matsusaka":"松阪","yokkaichi":"四日市","fukui":"福井","nara":"奈良","mukomachi":"向日町","wakayama":"和歌山","kishiwada":"岸和田","tamano":"玉野","hiroshima":"広島","hofu":"防府","takamatsu":"高松","komatsushima":"小松島","kochi":"高知","matsuyama":"松山","kokura":"小倉","kurume":"久留米","takeo":"武雄","sasebo":"佐世保","beppu":"別府","kumamoto":"熊本"}
@@ -402,7 +402,7 @@ if result:
         for i,g in enumerate(result["lines"],1): st.write(f"ライン{i}: "+" - ".join(f"{n} {names.get(n,'選手名不明')}" for n in g))
         st.caption("抽出元: "+result["line_source"])
     else: st.warning(result["line_source"])
-    st.subheader("券種別オッズ（v27・埋め込みJSON）")
+    st.subheader("券種別オッズ（v28・埋め込みJSON）")
     preload_odds = result.get("preload_odds_data")
     if isinstance(preload_odds, dict):
         update_ts = preload_odds.get("oddsUpdatedAt")
@@ -431,7 +431,7 @@ if result:
     else:
         st.info("このレースページの埋め込みJSONから券種別オッズを検出できませんでした。診断欄でクエリの有無を確認してください。")
 
-    st.subheader("埋め込みJSON診断（v27）")
+    st.subheader("埋め込みJSON診断（v28）")
     if result.get("preload_state"):
         st.success("window.__PRELOADED_STATE__ を抽出できました。")
         query_rows = result.get("preload_query_rows", [])
@@ -466,75 +466,75 @@ if result:
     else:
         st.warning(result.get("preload_error") or "埋め込みJSONを取得できませんでした。")
 
-    st.subheader("オッズ取得・券種照合")
-    odds=result["odds"]
-    st.write(f"推定オッズURL：{odds['url']}")
-    st.link_button("オッズページをブラウザで確認",odds["url"],use_container_width=True)
-    if odds["error"]:
-        st.error(f"オッズURL取得に失敗：{odds['error']}")
-    else:
-        st.write(f"オッズURL HTTP {odds['status']}／HTML {odds['html_len']:,}文字")
-        st.write("ページ内で見つかった券種見出し："+("、".join(odds["bet_types"]) if odds["bet_types"] else "未検出"))
-        with st.expander("参考診断：オッズAPI候補への直接アクセス", expanded=False):
-            api_test = odds.get("api_test")
-            if api_test:
-                st.write("API候補URL：", api_test["url"])
-                st.write(f"HTTP：{api_test['status']} ／ Content-Type：{api_test['content_type']} ／ 本文：{api_test['body_length']:,}文字 ／ JSON：{api_test['json_ok']}")
-                if api_test["error"]:
-                    st.error("API通信エラー：" + api_test["error"])
-                st.write("JSONトップ階層キー：", api_test["top_keys"] or "なし")
-                st.caption("これは読み取り専用のGET検査です。投票・購入処理は呼び出しません。APIホストは候補であり、HTTP応答で検証中です。")
-                st.download_button("API応答診断JSON保存", pd.Series(api_test).to_json(force_ascii=False, indent=2).encode("utf-8"), f"winticket_odds_api_diag_{date.today():%Y%m%d}.json", "application/json", key="download_api_test")
-                with st.expander("API応答本文（先頭部分）"):
-                    st.code(api_test["sample"] or "応答本文なし")
-            else:
-                st.info("API検査結果がありません。対象レースの取得ボタンをもう一度押してください。")
-        st.info(f"選択中：{selected_bet_type}。券種選択は画面に保持されますが、現在の候補データは券種別に確定できていません。下表は選択した券種の確定オッズではありません。")
-        if odds["rows"]:
-            # 券種に必要な車番数で候補を絞る。元ページの券種そのものを特定できていないため、
-            # 組番の車番数が一致しない候補を混ぜて表示しない。
-            needed = 3 if selected_bet_type in ("3連単", "3連複") else 2
-            filtered_rows = [row for row in odds["rows"] if len(str(row.get("組番候補", "")).split("-")) == needed]
-            if filtered_rows:
-                odds_df=pd.DataFrame(filtered_rows)
-                st.caption(f"表示形式：{selected_bet_type}向けの{needed}車番候補。券種・組番・数値の正確な対応は未検証です。")
-                st.dataframe(odds_df,use_container_width=True,hide_index=True)
-                st.download_button("オッズ候補CSV保存",odds_df.to_csv(index=False).encode("utf-8-sig"),f"keirin_odds_candidates_{date.today():%Y%m%d}.csv","text/csv",key="download_odds")
-            else:
-                st.warning(f"ページ本文から{selected_bet_type}に合う{needed}車番の候補を確認できませんでした。誤った券種の数値を表示しないため、候補を隠しています。")
+    with st.expander("旧方式のオッズ候補・通信診断（参考用。確定オッズではありません）", expanded=False):
+        odds=result["odds"]
+        st.write(f"推定オッズURL：{odds['url']}")
+        st.link_button("オッズページをブラウザで確認",odds["url"],use_container_width=True)
+        if odds["error"]:
+            st.error(f"オッズURL取得に失敗：{odds['error']}")
         else:
-            st.warning("HTTP取得はできましたが、組番・オッズ候補を認識できませんでした。")
-        with st.expander("オッズページ本文の診断抜粋"):
-            st.code(odds["text"][:5000] if odds["text"] else "本文テキストなし")
-        with st.expander("券種切替の調査：JavaScript一覧"):
-            st.caption("券種ごとのオッズが初期HTMLに含まれるか、JavaScript側で後から読み込まれるかを調べるための診断です。ここでは通信を実行したり投票したりしません。")
-            if odds.get("scripts"):
-                st.dataframe(pd.DataFrame(odds["scripts"]), use_container_width=True, hide_index=True)
-                st.download_button("JavaScript一覧CSV保存", pd.DataFrame(odds["scripts"]).to_csv(index=False).encode("utf-8-sig"), f"winticket_scripts_{date.today():%Y%m%d}.csv", "text/csv", key="download_scripts")
+            st.write(f"オッズURL HTTP {odds['status']}／HTML {odds['html_len']:,}文字")
+            st.write("ページ内で見つかった券種見出し："+("、".join(odds["bet_types"]) if odds["bet_types"] else "未検出"))
+            with st.expander("参考診断：オッズAPI候補への直接アクセス", expanded=False):
+                api_test = odds.get("api_test")
+                if api_test:
+                    st.write("API候補URL：", api_test["url"])
+                    st.write(f"HTTP：{api_test['status']} ／ Content-Type：{api_test['content_type']} ／ 本文：{api_test['body_length']:,}文字 ／ JSON：{api_test['json_ok']}")
+                    if api_test["error"]:
+                        st.error("API通信エラー：" + api_test["error"])
+                    st.write("JSONトップ階層キー：", api_test["top_keys"] or "なし")
+                    st.caption("これは読み取り専用のGET検査です。投票・購入処理は呼び出しません。APIホストは候補であり、HTTP応答で検証中です。")
+                    st.download_button("API応答診断JSON保存", pd.Series(api_test).to_json(force_ascii=False, indent=2).encode("utf-8"), f"winticket_odds_api_diag_{date.today():%Y%m%d}.json", "application/json", key="download_api_test")
+                    with st.expander("API応答本文（先頭部分）"):
+                        st.code(api_test["sample"] or "応答本文なし")
+                else:
+                    st.info("API検査結果がありません。対象レースの取得ボタンをもう一度押してください。")
+            st.info(f"選択中：{selected_bet_type}。券種選択は画面に保持されますが、現在の候補データは券種別に確定できていません。下表は選択した券種の確定オッズではありません。")
+            if odds["rows"]:
+                # 券種に必要な車番数で候補を絞る。元ページの券種そのものを特定できていないため、
+                # 組番の車番数が一致しない候補を混ぜて表示しない。
+                needed = 3 if selected_bet_type in ("3連単", "3連複") else 2
+                filtered_rows = [row for row in odds["rows"] if len(str(row.get("組番候補", "")).split("-")) == needed]
+                if filtered_rows:
+                    odds_df=pd.DataFrame(filtered_rows)
+                    st.caption(f"表示形式：{selected_bet_type}向けの{needed}車番候補。券種・組番・数値の正確な対応は未検証です。")
+                    st.dataframe(odds_df,use_container_width=True,hide_index=True)
+                    st.download_button("オッズ候補CSV保存",odds_df.to_csv(index=False).encode("utf-8-sig"),f"keirin_odds_candidates_{date.today():%Y%m%d}.csv","text/csv",key="download_odds")
+                else:
+                    st.warning(f"ページ本文から{selected_bet_type}に合う{needed}車番の候補を確認できませんでした。誤った券種の数値を表示しないため、候補を隠しています。")
             else:
-                st.warning("scriptタグが見つかりませんでした。")
-        with st.expander("券種切替の調査：スクリプト内キーワード"):
-            if odds.get("script_keywords"):
-                st.dataframe(pd.DataFrame(odds["script_keywords"]), use_container_width=True, hide_index=True)
-                st.download_button("キーワード抜粋CSV保存", pd.DataFrame(odds["script_keywords"]).to_csv(index=False).encode("utf-8-sig"), f"winticket_script_keywords_{date.today():%Y%m%d}.csv", "text/csv", key="download_script_keywords")
-            else:
-                st.warning("オッズ関連キーワードを含むインラインスクリプトは見つかりませんでした。外部JavaScript一覧を確認してください。")
-        with st.expander("券種切替の調査：外部JavaScript本体（v25・通信先重点調査）"):
-            st.caption("オッズ表実装に近いJavaScriptを優先し、APIパス・oddsId・オッズ状態管理の前後文脈を広めに採取します。結果は診断用で、直接投票や購入は行いません。")
-            js_diag = odds.get("external_js_diag", [])
-            if js_diag:
-                js_df = pd.DataFrame(js_diag)
-                st.write(f"診断行数：{len(js_df)}")
-                st.dataframe(js_df, use_container_width=True, hide_index=True)
-                st.download_button("外部JavaScript診断CSV保存", js_df.to_csv(index=False).encode("utf-8-sig"), f"winticket_external_js_diag_{date.today():%Y%m%d}.csv", "text/csv", key="download_external_js_diag")
-            else:
-                st.info("診断結果がありません。オッズ取得を実行し直してください。")
-        with st.expander("券種切替の調査：埋め込みJSON"):
-            if odds.get("json_blocks"):
-                st.dataframe(pd.DataFrame(odds["json_blocks"]), use_container_width=True, hide_index=True)
-            else:
-                st.info("JSON形式のscriptブロックは見つかりませんでした。")
+                st.warning("HTTP取得はできましたが、組番・オッズ候補を認識できませんでした。")
+            with st.expander("オッズページ本文の診断抜粋"):
+                st.code(odds["text"][:5000] if odds["text"] else "本文テキストなし")
+            with st.expander("券種切替の調査：JavaScript一覧"):
+                st.caption("券種ごとのオッズが初期HTMLに含まれるか、JavaScript側で後から読み込まれるかを調べるための診断です。ここでは通信を実行したり投票したりしません。")
+                if odds.get("scripts"):
+                    st.dataframe(pd.DataFrame(odds["scripts"]), use_container_width=True, hide_index=True)
+                    st.download_button("JavaScript一覧CSV保存", pd.DataFrame(odds["scripts"]).to_csv(index=False).encode("utf-8-sig"), f"winticket_scripts_{date.today():%Y%m%d}.csv", "text/csv", key="download_scripts")
+                else:
+                    st.warning("scriptタグが見つかりませんでした。")
+            with st.expander("券種切替の調査：スクリプト内キーワード"):
+                if odds.get("script_keywords"):
+                    st.dataframe(pd.DataFrame(odds["script_keywords"]), use_container_width=True, hide_index=True)
+                    st.download_button("キーワード抜粋CSV保存", pd.DataFrame(odds["script_keywords"]).to_csv(index=False).encode("utf-8-sig"), f"winticket_script_keywords_{date.today():%Y%m%d}.csv", "text/csv", key="download_script_keywords")
+                else:
+                    st.warning("オッズ関連キーワードを含むインラインスクリプトは見つかりませんでした。外部JavaScript一覧を確認してください。")
+            with st.expander("券種切替の調査：外部JavaScript本体（v25・通信先重点調査）"):
+                st.caption("オッズ表実装に近いJavaScriptを優先し、APIパス・oddsId・オッズ状態管理の前後文脈を広めに採取します。結果は診断用で、直接投票や購入は行いません。")
+                js_diag = odds.get("external_js_diag", [])
+                if js_diag:
+                    js_df = pd.DataFrame(js_diag)
+                    st.write(f"診断行数：{len(js_df)}")
+                    st.dataframe(js_df, use_container_width=True, hide_index=True)
+                    st.download_button("外部JavaScript診断CSV保存", js_df.to_csv(index=False).encode("utf-8-sig"), f"winticket_external_js_diag_{date.today():%Y%m%d}.csv", "text/csv", key="download_external_js_diag")
+                else:
+                    st.info("診断結果がありません。オッズ取得を実行し直してください。")
+            with st.expander("券種切替の調査：埋め込みJSON"):
+                if odds.get("json_blocks"):
+                    st.dataframe(pd.DataFrame(odds["json_blocks"]), use_container_width=True, hide_index=True)
+                else:
+                    st.info("JSON形式のscriptブロックは見つかりませんでした。")
     with st.expander("出走表の抽出診断"):
         st.code(result["rider_diag"])
 st.divider()
-st.markdown("注意：埋め込みJSONから券種別オッズを表示しますが、取得時刻以降の更新は保証しません。期待値計算に使う前に公式画面と照合してください。1日予算上限1,000円、購入は手動です。")
+st.markdown("注意：v28では埋め込みJSONのオッズ表を優先します。取得時刻以降の更新は保証しません。期待値計算に使う前に公式画面と照合してください。1日予算上限1,000円、購入は手動です。")
