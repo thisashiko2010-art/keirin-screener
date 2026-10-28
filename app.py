@@ -6,9 +6,9 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="競輪スクリーナー v17", page_icon="🚴", layout="wide")
+st.set_page_config(page_title="競輪スクリーナー v19", page_icon="🚴", layout="wide")
 st.title("🚴 競輪スクリーナー")
-st.caption("v17：当日・日付指定、選手7人・ライン抽出、券種選択付きオッズ診断。自動投票は行いません。")
+st.caption("v19：開催日計算を修正、選手・ライン抽出、券種別候補の形式確認。自動投票は行いません。")
 BASE_URL = "https://www.winticket.jp/keirin/racecard"
 HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","Accept-Language":"ja,en-US;q=0.9,en;q=0.8"}
 VENUES = {"hakodate":"函館","aomori":"青森","yahiko":"弥彦","maebashi":"前橋","toride":"取手","utsunomiya":"宇都宮","omiya":"大宮","seibuen":"西武園","keiokaku":"京王閣","tachikawa":"立川","matsudo":"松戸","chiba":"千葉","kawasaki":"川崎","hiratsuka":"平塚","odawara":"小田原","ito":"伊東","shizuoka":"静岡","nagoya":"名古屋","gifu":"岐阜","ogaki":"大垣","toyohashi":"豊橋","toyama":"富山","matsusaka":"松阪","yokkaichi":"四日市","fukui":"福井","nara":"奈良","mukomachi":"向日町","wakayama":"和歌山","kishiwada":"岸和田","tamano":"玉野","hiroshima":"広島","hofu":"防府","takamatsu":"高松","komatsushima":"小松島","kochi":"高知","matsuyama":"松山","kokura":"小倉","kurume":"久留米","takeo":"武雄","sasebo":"佐世保","beppu":"別府","kumamoto":"熊本"}
@@ -93,7 +93,7 @@ def extract_odds(html):
         if key not in seen: seen.add(key); dedup.append(row)
     return present,dedup,text
 
-st.info("初期値は今日。開催一覧は更新時に既存URLと統合し、取得件数が減っても一覧を不用意に縮めません。オッズ券種の切替は取得データの券種判定ができるまで診断用です。")
+st.info("初期値は今日。WINTICKETの開催IDは複数日開催をまとめた日付範囲なので、開催日＝開催IDの先頭日付とは限りません。開催日を開催ID＋日目から計算します。オッズ候補は券種と組番数が一致するものだけ表示します。")
 date_col,btn_col,link_col=st.columns([1.2,1,1])
 with date_col: target_date=st.date_input("開催日",value=date.today())
 with btn_col: load=st.button("開催一覧を更新",type="primary",use_container_width=True)
@@ -122,15 +122,27 @@ if load:
 
 races_all=st.session_state.get("races_all")
 if isinstance(races_all,pd.DataFrame) and not races_all.empty:
-    day_key=target_date.strftime("%Y%m%d")
-    races=races_all[races_all["開催ID"].astype(str).str.startswith(day_key)].copy()
+    # WINTICKETの開催IDは YYYYMMDDYYYYMMDD 等の開催期間を表すことがあり、
+    # URLの第2セグメントは「何日目」なので、開催日を開始日＋(日目-1)で計算する。
+    def actual_race_date(row):
+        try:
+            event_id = str(row["開催ID"])
+            start = pd.to_datetime(event_id[:8], format="%Y%m%d", errors="raise").date()
+            day_number = int(row["開催日番号"])
+            from datetime import timedelta
+            return start + timedelta(days=max(0, day_number - 1))
+        except Exception:
+            return None
+    races = races_all.copy()
+    races["実開催日"] = races.apply(actual_race_date, axis=1)
+    races = races[races["実開催日"] == target_date].copy()
     st.subheader(f"{target_date:%Y年%m月%d日} の開催")
-    st.caption(f"保持中URL総数：{len(races_all)}件")
+    st.caption(f"保持中URL総数：{len(races_all)}件（開催日を開催期間＋日目から判定）")
     if races.empty:
         st.warning("指定日のURLが保持一覧にありません。開催一覧を更新してください。")
     else:
         st.success(f"指定日のレースURL：{len(races)}件")
-        opts=[f'{r["競輪場"]} {r["レース"]} — {r["URL"]}' for _,r in races.iterrows()]
+        opts=[f'{r["競輪場"]} {r["レース"]}（{r["実開催日"]}） — {r["URL"]}' for _,r in races.iterrows()]
         previous=st.session_state.get("selected_race_option")
         default_index=opts.index(previous) if previous in opts else 0
         choice=st.selectbox("調査するレース",opts,index=default_index,key="race_choice")
@@ -196,9 +208,17 @@ if result:
         st.write("ページ内で見つかった券種見出し："+("、".join(odds["bet_types"]) if odds["bet_types"] else "未検出"))
         st.info(f"選択中：{selected_bet_type}。券種選択は画面に保持されますが、現在の候補データは券種別に確定できていません。下表は選択した券種の確定オッズではありません。")
         if odds["rows"]:
-            odds_df=pd.DataFrame(odds["rows"])
-            st.dataframe(odds_df,use_container_width=True,hide_index=True)
-            st.download_button("オッズ候補CSV保存",odds_df.to_csv(index=False).encode("utf-8-sig"),f"keirin_odds_candidates_{date.today():%Y%m%d}.csv","text/csv",key="download_odds")
+            # 券種に必要な車番数で候補を絞る。元ページの券種そのものを特定できていないため、
+            # 組番の車番数が一致しない候補を混ぜて表示しない。
+            needed = 3 if selected_bet_type in ("3連単", "3連複") else 2
+            filtered_rows = [row for row in odds["rows"] if len(str(row.get("組番候補", "")).split("-")) == needed]
+            if filtered_rows:
+                odds_df=pd.DataFrame(filtered_rows)
+                st.caption(f"表示形式：{selected_bet_type}向けの{needed}車番候補。券種・組番・数値の正確な対応は未検証です。")
+                st.dataframe(odds_df,use_container_width=True,hide_index=True)
+                st.download_button("オッズ候補CSV保存",odds_df.to_csv(index=False).encode("utf-8-sig"),f"keirin_odds_candidates_{date.today():%Y%m%d}.csv","text/csv",key="download_odds")
+            else:
+                st.warning(f"ページ本文から{selected_bet_type}に合う{needed}車番の候補を確認できませんでした。誤った券種の数値を表示しないため、候補を隠しています。")
         else:
             st.warning("HTTP取得はできましたが、組番・オッズ候補を認識できませんでした。")
         with st.expander("オッズページ本文の診断抜粋"):
