@@ -113,9 +113,9 @@ def json_safe_summary(value, max_chars=16000):
     except Exception as exc:
         return f"JSON表示失敗: {type(exc).__name__}: {exc}"
 
-st.set_page_config(page_title="競輪スクリーナー v28", page_icon="🚴", layout="wide")
-st.title("🚴 競輪スクリーナー v28")
-st.caption("v28：オッズ表示の切り分け版。画面上部の版番号で更新確認できます。自動投票はしません。")
+st.set_page_config(page_title="競輪スクリーナー v29", page_icon="🚴", layout="wide")
+st.title("🚴 競輪スクリーナー v29")
+st.caption("v29：オッズページ側の埋め込みJSONも直接検査する版。取得できないオッズは数値で偽装しません。自動投票はしません。")
 BASE_URL = "https://www.winticket.jp/keirin/racecard"
 HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","Accept-Language":"ja,en-US;q=0.9,en;q=0.8"}
 VENUES = {"hakodate":"函館","aomori":"青森","yahiko":"弥彦","maebashi":"前橋","toride":"取手","utsunomiya":"宇都宮","omiya":"大宮","seibuen":"西武園","keiokaku":"京王閣","tachikawa":"立川","matsudo":"松戸","chiba":"千葉","kawasaki":"川崎","hiratsuka":"平塚","odawara":"小田原","ito":"伊東","shizuoka":"静岡","nagoya":"名古屋","gifu":"岐阜","ogaki":"大垣","toyohashi":"豊橋","toyama":"富山","matsusaka":"松阪","yokkaichi":"四日市","fukui":"福井","nara":"奈良","mukomachi":"向日町","wakayama":"和歌山","kishiwada":"岸和田","tamano":"玉野","hiroshima":"広島","hofu":"防府","takamatsu":"高松","komatsushima":"小松島","kochi":"高知","matsuyama":"松山","kokura":"小倉","kurume":"久留米","takeo":"武雄","sasebo":"佐世保","beppu":"別府","kumamoto":"熊本"}
@@ -283,7 +283,8 @@ def extract_odds(html):
     for m in re.finditer(r"(?<!\d)([1-9])\s*[-=＞>]\s*([1-9])(?:\s*[-=＞>]\s*([1-9]))?\s+([1-9]\d{0,3}(?:\.\d)?)",text):
         combo="-".join(x for x in m.groups()[:3] if x)
         odds=float(m.group(4))
-        if odds>0: candidates.append({"組番候補":combo,"オッズ候補":odds,"一致テキスト":m.group(0)})
+        # Placeholder-like sentinel values must never be treated as real odds.
+        if 0 < odds < 9999.9: candidates.append({"組番候補":combo,"オッズ候補":odds,"一致テキスト":m.group(0)})
     # 重複を除くが、券種の確定は行わない。
     dedup=[]; seen=set()
     for row in candidates:
@@ -368,13 +369,23 @@ if isinstance(races_all,pd.DataFrame) and not races_all.empty:
                 try:
                     with st.spinner("オッズページを取得中…"):
                         odds_html,odds_status=get_html(odds_url)
+                    # v28は出走表HTMLだけを見ていた。実際のオッズクエリは
+                    # /odds/ 側にだけ埋め込まれる可能性があるため、そちらも解析する。
+                    odds_page_state, odds_page_state_error = extract_preloaded_state(odds_html)
+                    odds_page_query_rows, odds_page_payloads = summarize_query_state(odds_page_state) if odds_page_state else ([], [])
+                    odds_page_data, odds_page_key = extract_preloaded_odds(odds_page_state) if odds_page_state else (None, None)
+                    if isinstance(odds_page_data, dict):
+                        preload_state = odds_page_state
+                        preload_error = None
+                        preload_query_rows = odds_page_query_rows
+                        preload_odds_payloads = odds_page_payloads
                     bet_types,odds_rows,odds_text=extract_odds(odds_html)
                     script_rows, keyword_rows, json_blocks = diagnose_scripts(odds_html)
                     external_js_diag = diagnose_external_js(odds_html)
                     # The route shape is now grounded in the frontend bundle. Probe it separately;
                     # do not treat this candidate API host as confirmed until response is verified.
                     api_test = test_odds_api(str(selected["開催ID"]), int(selected["開催日番号"]), int(str(selected["レース"]).replace("R", "")))
-                    odds_result.update({"status":odds_status,"html_len":len(odds_html),"bet_types":bet_types,"rows":odds_rows,"text":odds_text,"scripts":script_rows,"script_keywords":keyword_rows,"json_blocks":json_blocks,"external_js_diag":external_js_diag,"api_test":api_test})
+                    odds_result.update({"status":odds_status,"html_len":len(odds_html),"bet_types":bet_types,"rows":odds_rows,"text":odds_text,"scripts":script_rows,"script_keywords":keyword_rows,"json_blocks":json_blocks,"external_js_diag":external_js_diag,"api_test":api_test,"odds_page_state_error":odds_page_state_error,"odds_page_preloaded_query_count":len(odds_page_query_rows),"odds_page_preloaded_odds_found":isinstance(odds_page_data, dict),"odds_page_preloaded_odds_key":odds_page_key})
                 except Exception as oe:
                     odds_result["error"]=f"{type(oe).__name__}: {oe}"
                 st.session_state["last_result"]={"race_url":race_url,"race_label":choice,"rider_status":status,"html_len":len(html),"riders":riders,"rider_diag":diag,"lines":lines,"line_source":line_source,"preload_state":preload_state,"preload_error":preload_error,"preload_query_rows":preload_query_rows,"preload_odds_payloads":preload_odds_payloads,"preload_odds_data":extract_preloaded_odds(preload_state)[0] if preload_state else None,"preload_odds_key":extract_preloaded_odds(preload_state)[1] if preload_state else None,"odds":odds_result,"fetched_at":pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -402,9 +413,11 @@ if result:
         for i,g in enumerate(result["lines"],1): st.write(f"ライン{i}: "+" - ".join(f"{n} {names.get(n,'選手名不明')}" for n in g))
         st.caption("抽出元: "+result["line_source"])
     else: st.warning(result["line_source"])
-    st.subheader("券種別オッズ（v28・埋め込みJSON）")
+    st.subheader("券種別オッズ（v29・出走表／オッズページ埋め込みJSON）")
     preload_odds = result.get("preload_odds_data")
     if isinstance(preload_odds, dict):
+        odds_source_note = "オッズページ側の埋め込みデータを優先して採用" if result.get("odds", {}).get("odds_page_preloaded_odds_found") else "出走表ページ側の埋め込みデータ"
+        st.caption("データ取得元：" + odds_source_note)
         update_ts = preload_odds.get("oddsUpdatedAt")
         if isinstance(update_ts, (int, float)) and update_ts > 0:
             try:
@@ -431,7 +444,7 @@ if result:
     else:
         st.info("このレースページの埋め込みJSONから券種別オッズを検出できませんでした。診断欄でクエリの有無を確認してください。")
 
-    st.subheader("埋め込みJSON診断（v28）")
+    st.subheader("埋め込みJSON診断（v29）")
     if result.get("preload_state"):
         st.success("window.__PRELOADED_STATE__ を抽出できました。")
         query_rows = result.get("preload_query_rows", [])
@@ -537,4 +550,4 @@ if result:
     with st.expander("出走表の抽出診断"):
         st.code(result["rider_diag"])
 st.divider()
-st.markdown("注意：v28では埋め込みJSONのオッズ表を優先します。取得時刻以降の更新は保証しません。期待値計算に使う前に公式画面と照合してください。1日予算上限1,000円、購入は手動です。")
+st.markdown("注意：v29では出走表ページに加えてオッズページ側の埋め込みJSONも検査します。実オッズを検出できない場合は、オッズ未取得として扱ってください。取得時刻以降の更新は保証しません。期待値計算に使う前に公式画面と照合してください。1日予算上限1,000円、購入は手動です。")
