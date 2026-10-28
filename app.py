@@ -6,9 +6,9 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="競輪スクリーナー v24", page_icon="🚴", layout="wide")
+st.set_page_config(page_title="競輪スクリーナー v25", page_icon="🚴", layout="wide")
 st.title("🚴 競輪スクリーナー")
-st.caption("v24：券種別オッズの通信先を絞り込む追加診断。候補オッズを確定値として扱わず、自動投票もしません。")
+st.caption("v25：特定したWINTICKETオッズAPIパスを直接検査。応答データの構造を診断し、自動投票はしません。")
 BASE_URL = "https://www.winticket.jp/keirin/racecard"
 HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","Accept-Language":"ja,en-US;q=0.9,en;q=0.8"}
 VENUES = {"hakodate":"函館","aomori":"青森","yahiko":"弥彦","maebashi":"前橋","toride":"取手","utsunomiya":"宇都宮","omiya":"大宮","seibuen":"西武園","keiokaku":"京王閣","tachikawa":"立川","matsudo":"松戸","chiba":"千葉","kawasaki":"川崎","hiratsuka":"平塚","odawara":"小田原","ito":"伊東","shizuoka":"静岡","nagoya":"名古屋","gifu":"岐阜","ogaki":"大垣","toyohashi":"豊橋","toyama":"富山","matsusaka":"松阪","yokkaichi":"四日市","fukui":"福井","nara":"奈良","mukomachi":"向日町","wakayama":"和歌山","kishiwada":"岸和田","tamano":"玉野","hiroshima":"広島","hofu":"防府","takamatsu":"高松","komatsushima":"小松島","kochi":"高知","matsuyama":"松山","kokura":"小倉","kurume":"久留米","takeo":"武雄","sasebo":"佐世保","beppu":"別府","kumamoto":"熊本"}
@@ -131,6 +131,36 @@ def diagnose_external_js(html):
             rows.append({"scriptURL":u,"HTTP":"ERR","文字数":0,"キーワード":type(e).__name__,"抜粋":str(e)[:250]})
     return rows[:800]
 
+def test_odds_api(cup_id, day_index, race_number):
+    """Test the API path identified in WINTICKET's public frontend bundle.
+    The API host is a candidate based on the frontend's API_URL + /v1 route layout;
+    response status and structure must be verified at runtime.
+    """
+    path = f"/keirin/cups/{cup_id}/schedules/{day_index}/races/{race_number}/odds"
+    base = "https://api.winticket.jp/v1"
+    url = base + path
+    params = {"pfm": "web"}
+    headers = dict(HEADERS)
+    headers.update({"Accept": "application/json, text/plain, */*", "X-Requested-With": "XMLHttpRequest", "Referer": "https://www.winticket.jp/"})
+    out = {"url": url, "params": params, "status": None, "content_type": "", "body_length": 0, "json_ok": False, "top_keys": [], "sample": "", "error": None}
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=20)
+        out["url"] = r.url
+        out["status"] = r.status_code
+        out["content_type"] = r.headers.get("content-type", "")
+        out["body_length"] = len(r.text or "")
+        try:
+            data = r.json()
+            out["json_ok"] = True
+            out["top_keys"] = list(data.keys())[:80] if isinstance(data, dict) else [f"JSON root type: {type(data).__name__}"]
+            import json
+            out["sample"] = json.dumps(data, ensure_ascii=False)[:10000]
+        except Exception:
+            out["sample"] = (r.text or "")[:3000]
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+    return out
+
 def odds_url_from_racecard(url):
     # WINTICKETの同一レースパスの odds 版を試す。実際のURL形式は取得時に検証する。
     return url.replace("/racecard/","/odds/")
@@ -225,14 +255,17 @@ if isinstance(races_all,pd.DataFrame) and not races_all.empty:
                     riders,diag=extract_riders(page_text)
                     lines,line_source=extract_lines(page_text,riders)
                 odds_url=odds_url_from_racecard(race_url)
-                odds_result={"url":odds_url,"status":None,"html_len":0,"bet_types":[],"rows":[],"text":"","error":None,"scripts":[],"script_keywords":[],"json_blocks":[],"external_js_diag":[]}
+                odds_result={"url":odds_url,"status":None,"html_len":0,"bet_types":[],"rows":[],"text":"","error":None,"scripts":[],"script_keywords":[],"json_blocks":[],"external_js_diag":[],"api_test":None}
                 try:
                     with st.spinner("オッズページを取得中…"):
                         odds_html,odds_status=get_html(odds_url)
                     bet_types,odds_rows,odds_text=extract_odds(odds_html)
                     script_rows, keyword_rows, json_blocks = diagnose_scripts(odds_html)
                     external_js_diag = diagnose_external_js(odds_html)
-                    odds_result.update({"status":odds_status,"html_len":len(odds_html),"bet_types":bet_types,"rows":odds_rows,"text":odds_text,"scripts":script_rows,"script_keywords":keyword_rows,"json_blocks":json_blocks,"external_js_diag":external_js_diag})
+                    # The route shape is now grounded in the frontend bundle. Probe it separately;
+                    # do not treat this candidate API host as confirmed until response is verified.
+                    api_test = test_odds_api(str(selected["開催ID"]), int(selected["開催日番号"]), int(str(selected["レース"]).replace("R", "")))
+                    odds_result.update({"status":odds_status,"html_len":len(odds_html),"bet_types":bet_types,"rows":odds_rows,"text":odds_text,"scripts":script_rows,"script_keywords":keyword_rows,"json_blocks":json_blocks,"external_js_diag":external_js_diag,"api_test":api_test})
                 except Exception as oe:
                     odds_result["error"]=f"{type(oe).__name__}: {oe}"
                 st.session_state["last_result"]={"race_url":race_url,"race_label":choice,"rider_status":status,"html_len":len(html),"riders":riders,"rider_diag":diag,"lines":lines,"line_source":line_source,"odds":odds_result,"fetched_at":pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -269,6 +302,20 @@ if result:
     else:
         st.write(f"オッズURL HTTP {odds['status']}／HTML {odds['html_len']:,}文字")
         st.write("ページ内で見つかった券種見出し："+("、".join(odds["bet_types"]) if odds["bet_types"] else "未検出"))
+        with st.expander("v25：オッズAPI直接応答の検証", expanded=True):
+            api_test = odds.get("api_test")
+            if api_test:
+                st.write("API候補URL：", api_test["url"])
+                st.write(f"HTTP：{api_test['status']} ／ Content-Type：{api_test['content_type']} ／ 本文：{api_test['body_length']:,}文字 ／ JSON：{api_test['json_ok']}")
+                if api_test["error"]:
+                    st.error("API通信エラー：" + api_test["error"])
+                st.write("JSONトップ階層キー：", api_test["top_keys"] or "なし")
+                st.caption("これは読み取り専用のGET検査です。投票・購入処理は呼び出しません。APIホストは候補であり、HTTP応答で検証中です。")
+                st.download_button("API応答診断JSON保存", pd.Series(api_test).to_json(force_ascii=False, indent=2).encode("utf-8"), f"winticket_odds_api_diag_{date.today():%Y%m%d}.json", "application/json", key="download_api_test")
+                with st.expander("API応答本文（先頭部分）"):
+                    st.code(api_test["sample"] or "応答本文なし")
+            else:
+                st.info("API検査結果がありません。対象レースの取得ボタンをもう一度押してください。")
         st.info(f"選択中：{selected_bet_type}。券種選択は画面に保持されますが、現在の候補データは券種別に確定できていません。下表は選択した券種の確定オッズではありません。")
         if odds["rows"]:
             # 券種に必要な車番数で候補を絞る。元ページの券種そのものを特定できていないため、
@@ -299,7 +346,7 @@ if result:
                 st.download_button("キーワード抜粋CSV保存", pd.DataFrame(odds["script_keywords"]).to_csv(index=False).encode("utf-8-sig"), f"winticket_script_keywords_{date.today():%Y%m%d}.csv", "text/csv", key="download_script_keywords")
             else:
                 st.warning("オッズ関連キーワードを含むインラインスクリプトは見つかりませんでした。外部JavaScript一覧を確認してください。")
-        with st.expander("券種切替の調査：外部JavaScript本体（v24・通信先重点調査）"):
+        with st.expander("券種切替の調査：外部JavaScript本体（v25・通信先重点調査）"):
             st.caption("オッズ表実装に近いJavaScriptを優先し、APIパス・oddsId・オッズ状態管理の前後文脈を広めに採取します。結果は診断用で、直接投票や購入は行いません。")
             js_diag = odds.get("external_js_diag", [])
             if js_diag:
