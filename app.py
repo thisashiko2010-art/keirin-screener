@@ -6,9 +6,9 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="競輪スクリーナー v16", page_icon="🚴", layout="wide")
+st.set_page_config(page_title="競輪スクリーナー v17", page_icon="🚴", layout="wide")
 st.title("🚴 競輪スクリーナー")
-st.caption("v16：当日・日付指定、選手7人・ライン抽出、オッズページ取得の検証。自動投票は行いません。")
+st.caption("v17：当日・日付指定、選手7人・ライン抽出、券種選択付きオッズ診断。自動投票は行いません。")
 BASE_URL = "https://www.winticket.jp/keirin/racecard"
 HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","Accept-Language":"ja,en-US;q=0.9,en;q=0.8"}
 VENUES = {"hakodate":"函館","aomori":"青森","yahiko":"弥彦","maebashi":"前橋","toride":"取手","utsunomiya":"宇都宮","omiya":"大宮","seibuen":"西武園","keiokaku":"京王閣","tachikawa":"立川","matsudo":"松戸","chiba":"千葉","kawasaki":"川崎","hiratsuka":"平塚","odawara":"小田原","ito":"伊東","shizuoka":"静岡","nagoya":"名古屋","gifu":"岐阜","ogaki":"大垣","toyohashi":"豊橋","toyama":"富山","matsusaka":"松阪","yokkaichi":"四日市","fukui":"福井","nara":"奈良","mukomachi":"向日町","wakayama":"和歌山","kishiwada":"岸和田","tamano":"玉野","hiroshima":"広島","hofu":"防府","takamatsu":"高松","komatsushima":"小松島","kochi":"高知","matsuyama":"松山","kokura":"小倉","kurume":"久留米","takeo":"武雄","sasebo":"佐世保","beppu":"別府","kumamoto":"熊本"}
@@ -132,7 +132,14 @@ if isinstance(races_all,pd.DataFrame) and not races_all.empty:
                     for i,g in enumerate(lines,1): st.write(f"ライン{i}: "+" - ".join(f"{n} {names.get(n,'選手名不明')}" for n in g))
                     st.caption("抽出元: "+line_source)
                 else: st.warning(line_source)
-                st.subheader("オッズ取得（検証中）")
+                st.subheader("オッズ取得・券種選択")
+                selected_bet_type = st.selectbox(
+                    "確認したい券種",
+                    ["3連単", "3連複", "2車単", "2車複", "ワイド", "枠単", "枠複"],
+                    key="selected_bet_type",
+                    help="ここで選ぶのは表示・整理用の指定です。取得元ページの券種見出しと一致することを確認するまでは、確定オッズとして扱いません。"
+                )
+                st.info(f"選択中の券種：{selected_bet_type}。取得した数値がこの券種のものか、ページ上の券種見出しと必ず照合してください。")
                 odds_url=odds_url_from_racecard(race_url)
                 st.write("推定した同一レースのオッズURL：")
                 st.code(odds_url)
@@ -144,9 +151,11 @@ if isinstance(races_all,pd.DataFrame) and not races_all.empty:
                     bet_types,odds_rows,odds_text=extract_odds(odds_html)
                     st.write("ページ内で見つかった券種見出し："+("、".join(bet_types) if bet_types else "未検出"))
                     if odds_rows:
-                        st.warning("以下は組番・数値の機械的な候補です。券種と意味を確定できていないため、予想や期待値計算にはまだ使わないでください。")
-                        st.dataframe(pd.DataFrame(odds_rows),use_container_width=True,hide_index=True)
-                        st.download_button("オッズ候補CSV保存",pd.DataFrame(odds_rows).to_csv(index=False).encode("utf-8-sig"),f"keirin_odds_candidates_{date.today():%Y%m%d}.csv","text/csv")
+                        odds_df = pd.DataFrame(odds_rows)
+                        odds_df.insert(0, "選択券種（未検証）", selected_bet_type)
+                        st.warning("以下は組番・数値の機械的な候補です。選択券種は手動ラベルであり、サイト上の券種を自動判定したものではありません。券種の見出しと組番の意味を照合するまで、予想や期待値計算には使わないでください。")
+                        st.dataframe(odds_df,use_container_width=True,hide_index=True)
+                        st.download_button("オッズ候補CSV保存",odds_df.to_csv(index=False).encode("utf-8-sig"),f"keirin_odds_candidates_{date.today():%Y%m%d}.csv","text/csv")
                     else:
                         st.warning("HTTP取得はできましたが、組番・オッズ候補を認識できませんでした。券種ごとの画面構造を診断します。")
                     with st.expander("オッズページ本文の診断抜粋"):
