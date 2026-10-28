@@ -6,9 +6,9 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="競輪スクリーナー v22", page_icon="🚴", layout="wide")
+st.set_page_config(page_title="競輪スクリーナー v23", page_icon="🚴", layout="wide")
 st.title("🚴 競輪スクリーナー")
-st.caption("v22：外部JavaScript本体を読み、券種・通信先・オッズ取得処理の手掛かりを診断。自動投票は行いません。")
+st.caption("v23：券種別オッズの通信先を絞り込む追加診断。候補オッズを確定値として扱わず、自動投票もしません。")
 BASE_URL = "https://www.winticket.jp/keirin/racecard"
 HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","Accept-Language":"ja,en-US;q=0.9,en;q=0.8"}
 VENUES = {"hakodate":"函館","aomori":"青森","yahiko":"弥彦","maebashi":"前橋","toride":"取手","utsunomiya":"宇都宮","omiya":"大宮","seibuen":"西武園","keiokaku":"京王閣","tachikawa":"立川","matsudo":"松戸","chiba":"千葉","kawasaki":"川崎","hiratsuka":"平塚","odawara":"小田原","ito":"伊東","shizuoka":"静岡","nagoya":"名古屋","gifu":"岐阜","ogaki":"大垣","toyohashi":"豊橋","toyama":"富山","matsusaka":"松阪","yokkaichi":"四日市","fukui":"福井","nara":"奈良","mukomachi":"向日町","wakayama":"和歌山","kishiwada":"岸和田","tamano":"玉野","hiroshima":"広島","hofu":"防府","takamatsu":"高松","komatsushima":"小松島","kochi":"高知","matsuyama":"松山","kokura":"小倉","kurume":"久留米","takeo":"武雄","sasebo":"佐世保","beppu":"別府","kumamoto":"熊本"}
@@ -96,39 +96,40 @@ def diagnose_scripts(html):
     return script_rows, keyword_rows[:100], json_blocks
 
 def diagnose_external_js(html):
-    """Fetch same-site JS bundles and find clues about API requests and bet-type odds."""
+    """Prioritize odds-related bundles and collect more useful endpoint/state excerpts."""
     soup = BeautifulSoup(html, "html.parser")
     script_urls = []
     for tag in soup.find_all("script", src=True):
         u = urljoin("https://www.winticket.jp", tag.get("src", ""))
         if urlparse(u).netloc.lower() in ("www.winticket.jp", "winticket.jp") and u not in script_urls:
             script_urls.append(u)
-    # Keep this diagnostic bounded; page-specific bundles and ordinary chunks are included.
-    keywords = ["trifecta", "quinellaPlace", "quinella", "exacta", "bracketExacta", "bracketQuinella", "odds", "fetch(", "graphql", "/api/", "axios", "raceId", "oddsId"]
+    # Odds table implementation chunks are more informative than generic vendor bundles.
+    priority_terms = ("chunk.92a6d36b954bd55e", "chunk.f5dd43f5e7ea94e5", "chunk.e5df37209196866a", "chunk.7189593c233b9f07", "bootstrap.")
+    script_urls.sort(key=lambda u: (min([priority_terms.index(t) for t in priority_terms if t in u] or [len(priority_terms)]), u))
+    keywords = ["/v1/", "/keirin/odds", "oddsForTable", "oddsId", "oddsSelectionByType", "raceId", "baseURL", "baseUrl", "axios.create", "fetch(", "method:\"GET\"", "application/json", "trifecta", "quinella_place", "bracket_quinella"]
     rows = []
-    for u in script_urls[:60]:
+    for u in script_urls[:80]:
         try:
-            r = requests.get(u, headers=HEADERS, timeout=12)
+            r = requests.get(u, headers=HEADERS, timeout=15)
             if r.status_code != 200 or not r.text:
                 rows.append({"scriptURL":u,"HTTP":r.status_code,"文字数":len(r.text or ""),"キーワード":"取得失敗/空","抜粋":""})
                 continue
             body = r.text
-            found = 0
+            local_rows = []
             for kw in keywords:
-                start = 0
-                hits = 0
-                while hits < 3:
+                start = 0; hits = 0
+                while hits < 5:
                     pos = body.lower().find(kw.lower(), start)
                     if pos < 0: break
-                    excerpt = re.sub(r"\s+", " ", body[max(0,pos-220):min(len(body),pos+420)]).strip()
-                    rows.append({"scriptURL":u,"HTTP":r.status_code,"文字数":len(body),"キーワード":kw,"抜粋":excerpt})
-                    start = pos + len(kw); hits += 1; found += 1
-                    if len(rows) >= 250: return rows
-            if not found:
-                rows.append({"scriptURL":u,"HTTP":r.status_code,"文字数":len(body),"キーワード":"対象語なし","抜粋":""})
+                    excerpt = re.sub(r"\s+", " ", body[max(0,pos-500):min(len(body),pos+1000)]).strip()
+                    local_rows.append({"scriptURL":u,"HTTP":r.status_code,"文字数":len(body),"キーワード":kw,"抜粋":excerpt})
+                    start = pos + len(kw); hits += 1
+            # Avoid letting one 1MB vendor bundle crowd out route-specific chunks.
+            rows.extend(local_rows[:35])
+            if len(rows) >= 500: break
         except Exception as e:
             rows.append({"scriptURL":u,"HTTP":"ERR","文字数":0,"キーワード":type(e).__name__,"抜粋":str(e)[:250]})
-    return rows
+    return rows[:500]
 
 def odds_url_from_racecard(url):
     # WINTICKETの同一レースパスの odds 版を試す。実際のURL形式は取得時に検証する。
@@ -298,8 +299,8 @@ if result:
                 st.download_button("キーワード抜粋CSV保存", pd.DataFrame(odds["script_keywords"]).to_csv(index=False).encode("utf-8-sig"), f"winticket_script_keywords_{date.today():%Y%m%d}.csv", "text/csv", key="download_script_keywords")
             else:
                 st.warning("オッズ関連キーワードを含むインラインスクリプトは見つかりませんでした。外部JavaScript一覧を確認してください。")
-        with st.expander("券種切替の調査：外部JavaScript本体（v22）"):
-            st.caption("同一サイトのJavaScriptを取得し、券種名・オッズ・API通信の手掛かりを検索します。結果は診断用で、直接投票や購入は行いません。")
+        with st.expander("券種切替の調査：外部JavaScript本体（v23・通信先重点調査）"):
+            st.caption("オッズ表実装に近いJavaScriptを優先し、APIパス・oddsId・オッズ状態管理の前後文脈を広めに採取します。結果は診断用で、直接投票や購入は行いません。")
             js_diag = odds.get("external_js_diag", [])
             if js_diag:
                 js_df = pd.DataFrame(js_diag)
