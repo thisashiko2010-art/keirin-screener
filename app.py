@@ -1,14 +1,14 @@
 import re
-from datetime import date
+from datetime import date, datetime, timedelta
 from urllib.parse import urljoin, urlparse
 import pandas as pd
 import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="競輪スクリーナー v14", page_icon="🚴", layout="wide")
+st.set_page_config(page_title="競輪スクリーナー v15", page_icon="🚴", layout="wide")
 st.title("🚴 競輪スクリーナー")
-st.caption("v14：選手データに加え、ページ本文から並び予想を抽出。自動投票は行いません。")
+st.caption("v15：日付指定・当日開催の絞り込み、選手データと並び予想の抽出。オッズ取得は検証中。自動投票は行いません。")
 BASE_URL = "https://www.winticket.jp/keirin/racecard"
 HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","Accept-Language":"ja,en-US;q=0.9,en;q=0.8"}
 VENUES = {"hakodate":"函館","aomori":"青森","yahiko":"弥彦","maebashi":"前橋","toride":"取手","utsunomiya":"宇都宮","omiya":"大宮","seibuen":"西武園","keiokaku":"京王閣","tachikawa":"立川","matsudo":"松戸","chiba":"千葉","kawasaki":"川崎","hiratsuka":"平塚","odawara":"小田原","ito":"伊東","shizuoka":"静岡","nagoya":"名古屋","gifu":"岐阜","ogaki":"大垣","toyohashi":"豊橋","toyama":"富山","matsusaka":"松阪","yokkaichi":"四日市","fukui":"福井","nara":"奈良","mukomachi":"向日町","wakayama":"和歌山","kishiwada":"岸和田","tamano":"玉野","hiroshima":"広島","hofu":"防府","takamatsu":"高松","komatsushima":"小松島","kochi":"高知","matsuyama":"松山","kokura":"小倉","kurume":"久留米","takeo":"武雄","sasebo":"佐世保","beppu":"別府","kumamoto":"熊本"}
@@ -100,51 +100,66 @@ def extract_lines(page_text, riders):
                 return [nums], m.group(0)
     return [], "本文から明確なライン区切りを認識できませんでした。並び予想が未掲載、または表示形式が異なる可能性があります。"
 
-st.info("v14：選手データを抽出し、ページ本文にある並び予想も解析します。ラインはサイト掲載の予想であり、確定情報ではありません。")
-c1,c2=st.columns(2)
-with c1: load=st.button("出走表URL一覧を取得",type="primary",use_container_width=True)
-with c2: st.link_button("WINTICKET出走表一覧を開く",BASE_URL,use_container_width=True)
+st.info("v15：日付を指定して開催を絞り込めます。初期値は今日です。日付を変えれば過去開催も確認できます。ラインはサイト掲載の予想であり、確定情報ではありません。")
+date_col, btn_col, link_col = st.columns([1.2, 1, 1])
+with date_col:
+    target_date = st.date_input("開催日", value=date.today(), help="初期値は今日。過去の日付を選べば、その日の開催を探します。")
+with btn_col:
+    load=st.button("開催一覧を更新",type="primary",use_container_width=True)
+with link_col:
+    st.link_button("WINTICKET出走表一覧",BASE_URL,use_container_width=True)
 if load:
     try:
         with st.spinner("一覧を取得中…"):
             html,status=get_html(BASE_URL); races=extract_races(html)
-        st.session_state["races"]=races
-        st.success(f"一覧取得成功（HTTP {status}）。URL {len(races)} 件。")
+        st.session_state["races_all"]=races
+        st.session_state["races_loaded_for"]=target_date.isoformat()
+        st.success(f"一覧取得成功（HTTP {status}）。サイトからURL {len(races)} 件を検出。")
         if not races.empty: st.dataframe(races,use_container_width=True,hide_index=True)
     except Exception as e: st.error(f"{type(e).__name__}: {e}")
-races=st.session_state.get("races")
-if isinstance(races,pd.DataFrame) and not races.empty:
-    st.subheader("選手データを取得")
-    opts=[f'{r["競輪場"]} {r["レース"]} — {r["URL"]}' for _,r in races.iterrows()]
-    choice=st.selectbox("調査するレース",opts); url=races.iloc[opts.index(choice)]["URL"]
-    if st.button("選手データを抽出",use_container_width=True):
-        try:
-            with st.spinner("レース本文を解析中…"):
-                html,status=get_html(url); soup=BeautifulSoup(html,"html.parser"); text=soup.get_text(" ",strip=True); rows,excerpt=extract_riders(text); lines,line_source=extract_lines(text,rows)
-            st.write(f"レースページ HTTP {status} ／ HTML {len(html):,}文字")
-            st.write(f"抽出人数：{len(rows)}人（出走表の実人数との照合は必要です）")
-            if rows:
-                car_numbers = [r["車番"] for r in rows]
-                missing = sorted(set(range(1, max(car_numbers, default=0) + 1)) - set(car_numbers))
-                if missing:
-                    st.warning(f"車番 {missing} の取得漏れがあります。予想に使う前に出走表と照合してください。")
+races_all=st.session_state.get("races_all")
+if isinstance(races_all,pd.DataFrame) and not races_all.empty:
+    # WINTICKET開催IDの先頭8桁は開催日 YYYYMMDD。
+    day_key=target_date.strftime("%Y%m%d")
+    races=races_all[races_all["開催ID"].astype(str).str.startswith(day_key)].copy()
+    st.subheader(f"{target_date:%Y年%m月%d日} の開催")
+    if races.empty:
+        st.warning(f"{target_date:%Y-%m-%d} のURLは一覧から見つかりませんでした。別の日付を選ぶか、開催一覧を更新してください。サイトの一覧が当日分を返していない場合もあります。")
+    else:
+        st.success(f"指定日のレースURL：{len(races)}件")
+        st.dataframe(races[["競輪場","レース","URL"]],use_container_width=True,hide_index=True)
+        st.subheader("選手データを取得")
+        opts=[f'{r["競輪場"]} {r["レース"]} — {r["URL"]}' for _,r in races.iterrows()]
+        choice=st.selectbox("調査するレース",opts); url=races.iloc[opts.index(choice)]["URL"]
+        if st.button("選手データを抽出",use_container_width=True):
+            try:
+                with st.spinner("レース本文を解析中…"):
+                    html,status=get_html(url); soup=BeautifulSoup(html,"html.parser"); text=soup.get_text(" ",strip=True); rows,excerpt=extract_riders(text); lines,line_source=extract_lines(text,rows)
+                st.write(f"レースページ HTTP {status} ／ HTML {len(html):,}文字")
+                st.write(f"抽出人数：{len(rows)}人（出走表の実人数との照合は必要です）")
+                if rows:
+                    car_numbers = [r["車番"] for r in rows]
+                    missing = sorted(set(range(1, max(car_numbers, default=0) + 1)) - set(car_numbers))
+                    if missing:
+                        st.warning(f"車番 {missing} の取得漏れがあります。予想に使う前に出走表と照合してください。")
+                    else:
+                        st.success(f"{len(rows)}人分の選手データ候補を抽出しました。車番の連番を確認しました。")
+                    df=pd.DataFrame(rows); st.dataframe(df,use_container_width=True,hide_index=True)
+                    st.download_button("選手データをCSV保存",df.to_csv(index=False).encode("utf-8-sig"),f"keirin_riders_{date.today():%Y%m%d}.csv","text/csv",use_container_width=True)
+                else: st.warning("本文は取得できましたが、選手行の形式が想定と一致しませんでした。下の抜粋を使って形式を合わせます。")
+                st.subheader("並び・ライン予想")
+                if lines:
+                    st.success(f"ライン候補を {len(lines)} 組抽出しました。サイト掲載の予想なので、実際の並びと照合してください。")
+                    for i, group in enumerate(lines, 1):
+                        names = {int(r["車番"]): r["選手名"] for r in rows}
+                        st.write(f"ライン{i}: " + " - ".join(f"{n} {names.get(n, '選手名不明')}" for n in group))
+                    st.caption("抽出元: " + line_source)
                 else:
-                    st.success(f"{len(rows)}人分の選手データ候補を抽出しました。車番の連番を確認しました。")
-                df=pd.DataFrame(rows); st.dataframe(df,use_container_width=True,hide_index=True)
-                st.download_button("選手データをCSV保存",df.to_csv(index=False).encode("utf-8-sig"),f"keirin_riders_{date.today():%Y%m%d}.csv","text/csv",use_container_width=True)
-            else: st.warning("本文は取得できましたが、選手行の形式が想定と一致しませんでした。下の抜粋を使って形式を合わせます。")
-            st.subheader("並び・ライン予想")
-            if lines:
-                st.success(f"ライン候補を {len(lines)} 組抽出しました。サイト掲載の予想なので、実際の並びと照合してください。")
-                for i, group in enumerate(lines, 1):
-                    names = {int(r["車番"]): r["選手名"] for r in rows}
-                    st.write(f"ライン{i}: " + " - ".join(f"{n} {names.get(n, '選手名不明')}" for n in group))
-                st.caption("抽出元: " + line_source)
-            else:
-                st.warning("並び予想を自動認識できませんでした。選手データの取得とは別に、ライン表記の確認が必要です。")
-                st.code(line_source)
-            with st.expander("出走表テキストの抜粋"): st.code(excerpt)
-            with st.expander("並び予想の診断用テキスト"): st.code(text[max(0, text.find("並び")-100):max(0, text.find("並び")-100)+700] if "並び" in text else text[:700])
-        except Exception as e: st.error(f"{type(e).__name__}: {e}")
+                    st.warning("並び予想を自動認識できませんでした。選手データの取得とは別に、ライン表記の確認が必要です。")
+                    st.code(line_source)
+                with st.expander("出走表テキストの抜粋"): st.code(excerpt)
+                with st.expander("並び予想の診断用テキスト"): st.code(text[max(0, text.find("並び")-100):max(0, text.find("並び")-100)+700] if "並び" in text else text[:700])
+            except Exception as e: st.error(f"{type(e).__name__}: {e}")
+
 st.divider()
-st.markdown("次はオッズ、バンク特性、当日の風を追加します。1日予算上限1,000円。自動投票は行いません。")
+st.markdown("次の開発項目：オッズ専用ページのURL形式と実データの解析を検証します。現時点ではオッズを取得できたと誤表示しません。1日予算上限1,000円。自動投票は行いません。")
