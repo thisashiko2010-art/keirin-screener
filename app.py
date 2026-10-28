@@ -6,9 +6,61 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="競輪スクリーナー v25", page_icon="🚴", layout="wide")
+
+import json
+
+PRELOADED_STATE_PATTERN = re.compile(
+    r"window\.__PRELOADED_STATE__\s*=\s*(\{.*?\});\s*window\.__CONFIG__",
+    re.S
+)
+
+def extract_preloaded_state(html):
+    """Extract WINTICKET's embedded TanStack Query state, if present."""
+    match = PRELOADED_STATE_PATTERN.search(html)
+    if not match:
+        return None, "window.__PRELOADED_STATE__ が見つかりませんでした。"
+    try:
+        return json.loads(match.group(1)), None
+    except Exception as exc:
+        return None, f"埋め込みJSONの解析失敗: {type(exc).__name__}: {exc}"
+
+def summarize_query_state(state):
+    """Return query keys and concise summaries, without assuming payload schema."""
+    if not isinstance(state, dict):
+        return [], []
+    queries = state.get("tanStackQuery", {}).get("queries", [])
+    rows = []
+    odds_payloads = []
+    for idx, query in enumerate(queries):
+        qkey = query.get("queryKey", [])
+        qkey_text = json.dumps(qkey, ensure_ascii=False)
+        data = query.get("state", {}).get("data")
+        row = {
+            "番号": idx,
+            "queryKey": qkey_text[:500],
+            "状態": query.get("state", {}).get("status", ""),
+            "データ型": type(data).__name__,
+            "データ文字数": len(json.dumps(data, ensure_ascii=False, default=str)) if data is not None else 0,
+        }
+        rows.append(row)
+        # This is diagnostic only; never infer odds values from names alone.
+        if "odds" in qkey_text.lower() or "odds" in json.dumps(data, ensure_ascii=False, default=str)[:500].lower():
+            odds_payloads.append({
+                "番号": idx,
+                "queryKey": qkey,
+                "data": data,
+            })
+    return rows, odds_payloads
+
+def json_safe_summary(value, max_chars=16000):
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2, default=str)[:max_chars]
+    except Exception as exc:
+        return f"JSON表示失敗: {type(exc).__name__}: {exc}"
+
+st.set_page_config(page_title="競輪スクリーナー v26", page_icon="🚴", layout="wide")
 st.title("🚴 競輪スクリーナー")
-st.caption("v25：特定したWINTICKETオッズAPIパスを直接検査。応答データの構造を診断し、自動投票はしません。")
+st.caption("v26：出走表HTMLのPRELOADED_STATEと券種別オッズクエリを診断。自動投票はしません。")
 BASE_URL = "https://www.winticket.jp/keirin/racecard"
 HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","Accept-Language":"ja,en-US;q=0.9,en;q=0.8"}
 VENUES = {"hakodate":"函館","aomori":"青森","yahiko":"弥彦","maebashi":"前橋","toride":"取手","utsunomiya":"宇都宮","omiya":"大宮","seibuen":"西武園","keiokaku":"京王閣","tachikawa":"立川","matsudo":"松戸","chiba":"千葉","kawasaki":"川崎","hiratsuka":"平塚","odawara":"小田原","ito":"伊東","shizuoka":"静岡","nagoya":"名古屋","gifu":"岐阜","ogaki":"大垣","toyohashi":"豊橋","toyama":"富山","matsusaka":"松阪","yokkaichi":"四日市","fukui":"福井","nara":"奈良","mukomachi":"向日町","wakayama":"和歌山","kishiwada":"岸和田","tamano":"玉野","hiroshima":"広島","hofu":"防府","takamatsu":"高松","komatsushima":"小松島","kochi":"高知","matsuyama":"松山","kokura":"小倉","kurume":"久留米","takeo":"武雄","sasebo":"佐世保","beppu":"別府","kumamoto":"熊本"}
@@ -254,6 +306,8 @@ if isinstance(races_all,pd.DataFrame) and not races_all.empty:
                     page_text=soup.get_text(" ",strip=True)
                     riders,diag=extract_riders(page_text)
                     lines,line_source=extract_lines(page_text,riders)
+                    preload_state, preload_error = extract_preloaded_state(html)
+                    preload_query_rows, preload_odds_payloads = summarize_query_state(preload_state) if preload_state else ([], [])
                 odds_url=odds_url_from_racecard(race_url)
                 odds_result={"url":odds_url,"status":None,"html_len":0,"bet_types":[],"rows":[],"text":"","error":None,"scripts":[],"script_keywords":[],"json_blocks":[],"external_js_diag":[],"api_test":None}
                 try:
@@ -268,7 +322,7 @@ if isinstance(races_all,pd.DataFrame) and not races_all.empty:
                     odds_result.update({"status":odds_status,"html_len":len(odds_html),"bet_types":bet_types,"rows":odds_rows,"text":odds_text,"scripts":script_rows,"script_keywords":keyword_rows,"json_blocks":json_blocks,"external_js_diag":external_js_diag,"api_test":api_test})
                 except Exception as oe:
                     odds_result["error"]=f"{type(oe).__name__}: {oe}"
-                st.session_state["last_result"]={"race_url":race_url,"race_label":choice,"rider_status":status,"html_len":len(html),"riders":riders,"rider_diag":diag,"lines":lines,"line_source":line_source,"odds":odds_result,"fetched_at":pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}
+                st.session_state["last_result"]={"race_url":race_url,"race_label":choice,"rider_status":status,"html_len":len(html),"riders":riders,"rider_diag":diag,"lines":lines,"line_source":line_source,"preload_state":preload_state,"preload_error":preload_error,"preload_query_rows":preload_query_rows,"preload_odds_payloads":preload_odds_payloads,"odds":odds_result,"fetched_at":pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}
             except Exception as e:
                 st.error(f"出走表処理失敗：{type(e).__name__}: {e}")
 
@@ -293,6 +347,41 @@ if result:
         for i,g in enumerate(result["lines"],1): st.write(f"ライン{i}: "+" - ".join(f"{n} {names.get(n,'選手名不明')}" for n in g))
         st.caption("抽出元: "+result["line_source"])
     else: st.warning(result["line_source"])
+    st.subheader("埋め込みJSON診断（v26）")
+    if result.get("preload_state"):
+        st.success("window.__PRELOADED_STATE__ を抽出できました。")
+        query_rows = result.get("preload_query_rows", [])
+        st.write(f"TanStack Query件数：{len(query_rows)}")
+        if query_rows:
+            st.dataframe(pd.DataFrame(query_rows), use_container_width=True, hide_index=True)
+            st.download_button(
+                "埋め込みJSONのクエリ一覧CSV保存",
+                pd.DataFrame(query_rows).to_csv(index=False).encode("utf-8-sig"),
+                f"winticket_preloaded_queries_{date.today():%Y%m%d}.csv",
+                "text/csv",
+                key="download_preloaded_queries"
+            )
+        odds_payloads = result.get("preload_odds_payloads", [])
+        if odds_payloads:
+            st.warning(f"オッズ関連とみられるクエリ候補：{len(odds_payloads)}件。値の意味と券種対応は未確定です。")
+            for oi, payload in enumerate(odds_payloads):
+                qkey_label = json.dumps(payload.get("queryKey", []), ensure_ascii=False)
+                with st.expander(f"候補 {oi+1}: {qkey_label[:180]}"):
+                    st.code(json_safe_summary(payload.get("data"), 16000), language="json")
+            st.download_button(
+                "オッズ関連クエリ候補JSON保存",
+                json.dumps(odds_payloads, ensure_ascii=False, indent=2, default=str).encode("utf-8"),
+                f"winticket_preloaded_odds_candidates_{date.today():%Y%m%d}.json",
+                "application/json",
+                key="download_preloaded_odds"
+            )
+        else:
+            st.info("埋め込みJSON内に、キー名またはデータ先頭部分からオッズ関連と判定できるクエリは見つかりませんでした。")
+        with st.expander("埋め込みJSON全体（先頭部分）"):
+            st.code(json_safe_summary(result["preload_state"], 20000), language="json")
+    else:
+        st.warning(result.get("preload_error") or "埋め込みJSONを取得できませんでした。")
+
     st.subheader("オッズ取得・券種照合")
     odds=result["odds"]
     st.write(f"推定オッズURL：{odds['url']}")
@@ -302,7 +391,7 @@ if result:
     else:
         st.write(f"オッズURL HTTP {odds['status']}／HTML {odds['html_len']:,}文字")
         st.write("ページ内で見つかった券種見出し："+("、".join(odds["bet_types"]) if odds["bet_types"] else "未検出"))
-        with st.expander("v25：オッズAPI直接応答の検証", expanded=True):
+        with st.expander("参考診断：オッズAPI候補への直接アクセス", expanded=False):
             api_test = odds.get("api_test")
             if api_test:
                 st.write("API候補URL：", api_test["url"])
@@ -364,4 +453,4 @@ if result:
     with st.expander("出走表の抽出診断"):
         st.code(result["rider_diag"])
 st.divider()
-st.markdown("注意：券種別のオッズ取得はまだ未完成です。組番と券種の対応を検証できるまで期待値計算には使用しません。1日予算上限1,000円、購入は手動です。")
+st.markdown("注意：券種別のオッズ取得はまだ未完成です。埋め込みJSONにオッズらしいデータがあっても、組番・券種・更新時刻の対応を検証できるまで期待値計算には使用しません。1日予算上限1,000円、購入は手動です。")
