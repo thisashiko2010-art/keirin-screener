@@ -105,6 +105,15 @@ def odds_rows_for_bet_type(odds_payload, bet_type):
             else:
                 row["オッズ"] = "—"
         rows.append(row)
+    # 人気順がある行は人気1位から表示し、未設定(0/None)は最後に回す。
+    def popularity_sort_key(row):
+        value = row.get("人気順")
+        try:
+            value = int(value)
+            return (value <= 0, value if value > 0 else 10**9)
+        except (TypeError, ValueError):
+            return (True, 10**9)
+    rows.sort(key=popularity_sort_key)
     return rows
 
 def json_safe_summary(value, max_chars=16000):
@@ -434,8 +443,20 @@ if result:
         if selected_rows:
             st.success(f"{selected_bet_type}：{len(selected_rows)}件を読み取りました。")
             odds_df = pd.DataFrame(selected_rows)
+            # 保存CSVにレース識別情報と取得時刻を付け、後日の検証に使えるようにする。
+            odds_save_df = odds_df.copy()
+            odds_save_df.insert(0, "取得時刻", result.get("fetched_at", "不明"))
+            odds_save_df.insert(1, "レース選択", str(result.get("race_label", "")))
+            odds_save_df.insert(2, "券種", selected_bet_type)
+            
             st.dataframe(odds_df, use_container_width=True, hide_index=True)
-            st.download_button("表示中の券種オッズをCSV保存", odds_df.to_csv(index=False).encode("utf-8-sig"), f"keirin_{source_key}_odds_{date.today():%Y%m%d}.csv", "text/csv", key="download_preloaded_odds_table")
+            st.download_button(
+                "表示中の券種オッズをCSV保存（取得時刻付き）",
+                odds_save_df.to_csv(index=False).encode("utf-8-sig"),
+                f"keirin_{source_key}_odds_{date.today():%Y%m%d}.csv",
+                "text/csv",
+                key="download_preloaded_odds_table"
+            )
         else:
             st.info(f"{selected_bet_type}のオッズ行は、この埋め込みデータ内では0件です。7車立てでは枠単・枠複が含まれない場合がありますが、0件だけで理由までは断定できません。")
         with st.expander("券種ごとのデータ件数"):
